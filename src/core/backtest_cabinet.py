@@ -922,11 +922,13 @@ class BacktestCabinet:
                         sid, {self.stock_code: last_price}
                     )
                     current_cash = float(account.cash)
+                    meta = self.state_affairs.position_meta(sid, self.stock_code)
                     strategy_context[sid] = {
                         "current_cash": current_cash,
                         "available_cash": current_cash,
                         "total_value": float(current_cash + holdings_value),
-                        "last_price": last_price
+                        "last_price": last_price,
+                        "position_meta": {self.stock_code: meta} if meta else {}
                     }
                 signals = self.secretariat.generate_signals(
                     kline,

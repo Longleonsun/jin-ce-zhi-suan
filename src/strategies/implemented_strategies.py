@@ -4,6 +4,7 @@ from src.utils.indicators import Indicators
 import pandas as pd
 import numpy as np
 from src.utils.runtime_params import get_value
+from src.utils.market_rules import lot_size_for_code
 
 class BaseImplementedStrategy(BaseStrategy):
     """
@@ -689,3 +690,208 @@ class Strategy10(BaseImplementedStrategy):
                 reason.append("Time Exit")
             return self.create_exit_signal(kline, qty, " | ".join(reason) if reason else "Rule Exit")
         return None
+
+
+class Strategy11(BaseImplementedStrategy):
+    """MACD + KDJ + 成交量共振策略，面向 Yahoo 日线数据，兼容A股/美股。"""
+
+    def __init__(self):
+        super().__init__("11", "MACD-KDJ-成交量共振", trigger_timeframe="D")
+        self._init_state()
+
+    def _init_state(self):
+        self.history = {}
+        self.entry_price_local = {}  # Code -> 入场成本价（优先取引擎持仓成本）
+        self.highest_close = {}      # Code -> 入场以来最高收盘价
+        self.bar_seq = {}            # Code -> 已处理K线计数
+        self.last_exit_seq = {}      # Code -> 最近一次平仓时的K线序号
+        self.position_meta = {}      # Code -> {"avg_price", "entry_day"}，由引擎每根K线注入
+
+    def update_position(self, code, qty):
+        prev_qty = int(self.positions.get(code, 0) or 0)
+        super().update_position(code, qty)
+        qty = int(qty or 0)
+        if qty > 0 and prev_qty <= 0:
+            fill_price = float(getattr(self, "last_price", 0.0) or 0.0)
+            if fill_price > 0:
+                self.entry_price_local[code] = fill_price
+                self.highest_close[code] = fill_price
+        elif qty <= 0 and prev_qty > 0:
+            self.entry_price_local.pop(code, None)
+            self.highest_close.pop(code, None)
+            self.last_exit_seq[code] = self.bar_seq.get(code, 0)
+
+    def _append_history(self, code, kline):
+        row = pd.DataFrame([dict(kline)])
+        df = self.history.get(code)
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            self.history[code] = row
+            return
+        # 同一根K线重复推送（实盘预热/盘中刷新）时覆盖而非追加
+        if "dt" in df.columns and pd.to_datetime(df["dt"].iloc[-1]) == pd.to_datetime(kline.get("dt")):
+            df = df.iloc[:-1]
+        self.history[code] = pd.concat([df, row], ignore_index=True).tail(360)
+
+    def _buy_qty(self, code, price):
+        """按市场下单单位取整，并限制单标的仓位不超过总资产的 max_position_pct。"""
+        if price <= 0:
+            return 0
+        lot = lot_size_for_code(code)
+        cash = float(getattr(self, "current_cash", getattr(self, "available_cash", 0.0)) or 0.0)
+        total = float(getattr(self, "total_value", 0.0) or 0.0) or cash
+        cap_pct = float(self._cfg("max_position_pct", 0.2))
+        if cap_pct > 1:
+            cap_pct = cap_pct / 100.0
+        budget = min(cash, total * cap_pct) if cap_pct > 0 else cash
+        mode = str(self._cfg("order_qty_mode", "fixed")).strip().lower()
+        if mode == "cash_pct":
+            pct = float(self._cfg("order_cash_pct", 0.1))
+            if pct > 1:
+                pct = pct / 100.0
+            budget = min(budget, cash * max(0.0, min(1.0, pct)))
+            raw_qty = int(budget // price)
+        else:
+            raw_qty = min(int(float(self._cfg("order_qty", 1000))), int(budget // price))
+        return max(0, (raw_qty // lot) * lot)
+
+    def _volume_baseline(self, df, vol):
+        """放量基准：日线用近 N 根均量；分钟级用过去 N 个交易日同一时段的均量。
+        盘中成交量集中在开盘和收盘时段，直接和相邻K线均量比，放量条件会退化成"是否开盘/收盘那根"。"""
+        if self.trigger_timeframe == "D":
+            ma = vol.rolling(int(self._cfg("volume_ma_window", 20))).mean().iloc[-1]
+            return 0.0 if pd.isna(ma) else float(ma)
+        days = int(self._cfg("volume_slot_days", 10))
+        slot = pd.to_datetime(df["dt"], errors="coerce").dt.strftime("%H:%M")
+        same_slot = vol[slot == slot.iloc[-1]].iloc[:-1].tail(days)
+        if days <= 0 or len(same_slot) < days:
+            return 0.0
+        return float(same_slot.mean())
+
+    def _restore_entry_state(self, code, df, curr_close):
+        """重启后本地状态丢失时，用引擎持仓成本与买入日重建入场价、最高收盘价和持仓K线数。"""
+        meta = self.position_meta.get(code) if isinstance(self.position_meta, dict) else None
+        meta = meta if isinstance(meta, dict) else {}
+        avg_price = float(meta.get("avg_price", 0.0) or 0.0)
+        if avg_price > 0:
+            self.entry_price_local[code] = avg_price
+        elif code not in self.entry_price_local:
+            self.entry_price_local[code] = curr_close
+        if code in self.highest_close:
+            return
+        entry_price = float(self.entry_price_local[code])
+        entry_day = str(meta.get("entry_day", "") or "").strip()
+        since_entry = pd.DataFrame()
+        if entry_day and "dt" in df.columns:
+            dts = pd.to_datetime(df["dt"], errors="coerce")
+            since_entry = df[dts.dt.normalize() >= pd.Timestamp(entry_day)]
+        if not since_entry.empty:
+            self.highest_close[code] = max(entry_price, float(pd.to_numeric(since_entry["close"], errors="coerce").max()))
+            self.bars_held[code] = max(int(self.bars_held.get(code, 0) or 0), len(since_entry) - 1)
+        else:
+            self.highest_close[code] = max(entry_price, curr_close)
+
+    def on_bar(self, kline):
+        code = str(kline.get("code", "") or "").strip()
+        if not code:
+            return None
+        self.update_holding_time(code)
+        self._append_history(code, kline)
+        self.bar_seq[code] = self.bar_seq.get(code, 0) + 1
+        df = self.history[code]
+
+        min_bars = max(2, int(self._cfg("min_history_bars", 60)))
+        if len(df) < min_bars:
+            return None
+
+        close = pd.to_numeric(df["close"], errors="coerce")
+        high = pd.to_numeric(df["high"], errors="coerce")
+        low = pd.to_numeric(df["low"], errors="coerce")
+        vol = pd.to_numeric(df["vol"], errors="coerce").fillna(0.0)
+        dif, dea, macd = Indicators.MACD(close)
+        k, d, j = Indicators.KDJ(high, low, close)
+        ma20 = Indicators.MA(close, 20)
+        curr_close = float(close.iloc[-1])
+        if curr_close <= 0:
+            return None
+
+        qty = int(self.positions.get(code, 0) or 0)
+        stop_loss_pct = float(self._cfg("stop_loss_pct", 0.08))
+        take_profit_pct = float(self._cfg("take_profit_pct", 0.18))
+        trailing_stop_pct = float(self._cfg("trailing_stop_pct", 0.10))
+        max_hold_bars = int(self._cfg("max_hold_bars", 80))
+
+        dif_now, dif_prev = float(dif.iloc[-1]), float(dif.iloc[-2])
+        dea_now, dea_prev = float(dea.iloc[-1]), float(dea.iloc[-2])
+        k_now, k_prev = float(k.iloc[-1]), float(k.iloc[-2])
+        d_now, d_prev = float(d.iloc[-1]), float(d.iloc[-2])
+        j_now = float(j.iloc[-1])
+        ma20_now = float(ma20.iloc[-1]) if not pd.isna(ma20.iloc[-1]) else None
+        trend_ok = ma20_now is not None and curr_close > ma20_now
+
+        if qty <= 0:
+            cooldown = int(self._cfg("reentry_cooldown_bars", 3))
+            last_exit = self.last_exit_seq.get(code)
+            if last_exit is not None and self.bar_seq[code] - last_exit <= cooldown:
+                return None
+            macd_gold = dif_now > dea_now and dif_prev <= dea_prev
+            # 零轴上方多头区间：DIF、DEA 均在零轴上方且 DIF > DEA（MACD 柱 > 0 与 DIF > DEA 等价）
+            macd_bull = dif_now > dea_now and dea_now > 0 and float(macd.iloc[-1]) > 0
+            kdj_gold = k_now > d_now and k_prev <= d_prev
+            # 强势回升：K > D 且 J > K，且 K 值较上一根抬升（J > K 与 K > D 等价，需 K 抬升才构成"回升"）
+            kdj_strong = k_now > d_now and j_now > k_now and k_now > k_prev
+            vol_base = self._volume_baseline(df, vol)
+            volume_ok = vol_base > 0 and float(vol.iloc[-1]) > vol_base * float(self._cfg("volume_multiple", 1.2))
+            if trend_ok and volume_ok and (macd_gold or macd_bull) and (kdj_gold or kdj_strong):
+                buy_qty = self._buy_qty(code, curr_close)
+                if buy_qty <= 0:
+                    return None
+                return {
+                    "strategy_id": self.id,
+                    "code": code,
+                    "dt": kline["dt"],
+                    "direction": "BUY",
+                    "price": curr_close,
+                    "qty": buy_qty,
+                    "stop_loss": curr_close * (1 - stop_loss_pct),
+                    "take_profit": curr_close * (1 + take_profit_pct),
+                }
+            return None
+
+        self._restore_entry_state(code, df, curr_close)
+        self.highest_close[code] = max(float(self.highest_close[code]), curr_close)
+        entry_price = float(self.entry_price_local[code])
+        macd_dead = dif_now < dea_now and dif_prev >= dea_prev
+        kdj_dead = k_now < d_now and k_prev >= d_prev
+        if kdj_dead and bool(self._cfg("kdj_exit_filter", True)):
+            # 主升浪（站上MA20且DIF在零轴上方）中，只认高位死叉；低/中位随机死叉忽略
+            strong_trend = trend_ok and dif_now > 0
+            cross_level = max(k_prev, d_prev)
+            kdj_dead = (not strong_trend) or cross_level >= float(self._cfg("kdj_exit_min_level", 80))
+        stop_loss_hit = curr_close <= entry_price * (1 - stop_loss_pct)
+        take_profit_hit = curr_close >= entry_price * (1 + take_profit_pct)
+        trailing_hit = curr_close <= float(self.highest_close[code]) * (1 - trailing_stop_pct)
+        timeout_exit = self.check_max_holding_time(code, max_hold_bars)
+        if macd_dead or kdj_dead or stop_loss_hit or take_profit_hit or trailing_hit or timeout_exit:
+            reason = []
+            if macd_dead:
+                reason.append("MACD Death Cross")
+            if kdj_dead:
+                reason.append("KDJ Death Cross")
+            if stop_loss_hit:
+                reason.append("Stop Loss")
+            if take_profit_hit:
+                reason.append("Take Profit")
+            if trailing_hit:
+                reason.append("Trailing Stop")
+            if timeout_exit:
+                reason.append("Time Exit")
+            return self.create_exit_signal(kline, qty, " | ".join(reason))
+        return None
+
+
+class Strategy12(Strategy11):
+    """MACD + KDJ + 成交量共振策略的30分钟版本。"""
+
+    def __init__(self):
+        BaseImplementedStrategy.__init__(self, "12", "MACD-KDJ-成交量共振30分钟", trigger_timeframe="30min")
+        self._init_state()

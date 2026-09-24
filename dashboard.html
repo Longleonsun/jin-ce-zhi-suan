@@ -3510,6 +3510,44 @@ class GeneratedStrategyTemplate(BaseImplementedStrategy):
                 params: ['箱体周期: 240', '突破阈值: 5%', 'RSI: 14', '超卖/超买: 30/70', '底仓/机动仓: 可配置'],
                 note: '策略09按日线触发，适合震荡区间做降本和仓位再平衡。',
                 example: '示例：日线接近下轨且RSI=28分批低吸，价格回到上轨附近且RSI>70后高抛机动仓。'
+            },
+            '11': {
+                name: '11 MACD-KDJ-成交量共振',
+                trigger: '日线',
+                entry_rules: [
+                    '趋势过滤：收盘价站上MA20。',
+                    'MACD确认：MACD金叉，或处于零轴上方的多头区间（DIF、DEA均在零轴上方且DIF > DEA）。',
+                    'KDJ确认：KDJ金叉（K上穿D），或强势回升（K > D、J > K且K值较上一根抬升）。',
+                    '成交量确认：当日成交量 > 20日均量 * 1.2。',
+                    '平仓后3根K线内不再开仓（冷却期）。'
+                ],
+                exit_rules: [
+                    'MACD死叉离场。',
+                    'KDJ死叉离场；主升浪中（站上MA20且DIF在零轴上方）只认K/D在80以上的高位死叉。',
+                    '达到止损、止盈、追踪止损或最大持有天数时离场。'
+                ],
+                params: ['成交量倍数: 1.2', '止损: 8%', '止盈: 18%', '追踪止损: 10%', '最大持有: 80根日线', '单标的仓位上限: 总资产20%'],
+                note: '策略11面向Yahoo日线数据，支持A股与美股代码，例如600519.SH、000001.SZ、AAPL.US或AAPL。',
+                example: '示例：AAPL.US日线站上MA20，同时MACD/KDJ走强且明显放量时硅基。'
+            },
+            '12': {
+                name: '12 MACD-KDJ-成交量共振30分钟',
+                trigger: '30分钟',
+                entry_rules: [
+                    '趋势过滤：30分钟收盘价站上MA20。',
+                    'MACD确认：30分钟MACD金叉，或处于零轴上方的多头区间（DIF、DEA均在零轴上方且DIF > DEA）。',
+                    'KDJ确认：30分钟KDJ金叉（K上穿D），或强势回升（K > D、J > K且K值较上一根抬升）。',
+                    '成交量确认：当前30分钟成交量 > 过去10个交易日同一时段均量 * 1.5（避免开盘/收盘时段天然放量的干扰）。',
+                    '平仓后3根K线内不再开仓（冷却期）。'
+                ],
+                exit_rules: [
+                    '30分钟MACD死叉离场。',
+                    '30分钟KDJ死叉离场；主升浪中只认K/D在80以上的高位死叉。',
+                    '达到止损、止盈、追踪止损或最大持有bar数时离场。'
+                ],
+                params: ['成交量倍数: 1.5', '止损: 3.5%', '止盈: 8%', '追踪止损: 5%', '最大持有: 80根30分钟K线', '单标的仓位上限: 总资产20%'],
+                note: '策略12使用30分钟数据，适合Yahoo可获取的美股/ETF与支持30分钟K线的数据源。',
+                example: '示例：AAPL.US 30分钟K线站上MA20，同时MACD/KDJ走强且放量时硅基。'
             }
         };
         const STRATEGY_FALLBACK = [
@@ -3522,7 +3560,9 @@ class GeneratedStrategyTemplate(BaseImplementedStrategy):
             { id: '06', name: '海豚交易法' },
             { id: '07', name: '跳空交易系统' },
             { id: '08', name: '神奇九转' },
-            { id: '09', name: '箱体降本策略' }
+            { id: '09', name: '箱体降本策略' },
+            { id: '11', name: 'MACD-KDJ-成交量共振' },
+            { id: '12', name: 'MACD-KDJ-成交量共振30分钟' }
         ];
         const CLASSIC_PATTERNS = [
             { id: 'p1', patternName: '单边大牛市（主升浪）', stockName: '上纬新材', stockCode: '688585', start: '2025-07-09', end: '2025-12-31' },

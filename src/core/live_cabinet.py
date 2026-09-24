@@ -294,6 +294,15 @@ class LiveCabinet:
         with open(self._fund_pool_state_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
 
+    def _sync_strategy_positions(self):
+        """把恢复出的资金池持仓同步回策略实例，否则重启后策略会误判为空仓。"""
+        for strategy_id, stocks in (self.state_affairs.positions or {}).items():
+            if not isinstance(stocks, dict):
+                continue
+            for code, pos in stocks.items():
+                if isinstance(pos, dict):
+                    self.secretariat.update_strategy_state(str(strategy_id), code, int(pos.get("qty", 0) or 0))
+
     def _restore_virtual_fund_pool(self):
         if not os.path.exists(self._fund_pool_state_file):
             self._persist_virtual_fund_pool()
@@ -317,6 +326,7 @@ class LiveCabinet:
                 self.revenue.transactions = tx_all
             if isinstance(positions_state, dict):
                 self.state_affairs.positions = positions_state
+                self._sync_strategy_positions()
             return True
         except Exception:
             return False
@@ -522,13 +532,17 @@ class LiveCabinet:
                 tf_cache[tf] = self._fetch_latest_bar_for_timeframe(tf, current_dt) or base_bar
         by_strategy = {}
         kline_by_strategy = {}
+        total_value = float(self.revenue.cash) + self._sum_holdings_value()
         for sid in runnable:
             tf = sid_tf.get(sid, "1min")
             kline = tf_cache.get(tf, base_bar) or base_bar
+            meta = self.state_affairs.position_meta(sid, self.stock_code)
             by_strategy[sid] = {
                 "current_cash": float(self.revenue.cash),
+                "total_value": total_value,
                 "last_price": float(kline.get("close", base_bar.get("close", 0.0)) or 0.0),
-                "trigger_timeframe": tf
+                "trigger_timeframe": tf,
+                "position_meta": {self.stock_code: meta} if meta else {}
             }
             kline_by_strategy[sid] = kline
         return {

@@ -97,6 +97,18 @@ class ShangshuSheng:
     def _lot_size(self, code):
         return lot_size_for_code(code)
 
+    def position_meta(self, strategy_id, code):
+        """供策略恢复持仓状态：成本价与最早买入日。无持仓返回 None。"""
+        pos = self.positions.get(strategy_id, {}).get(code)
+        if not isinstance(pos, dict) or int(pos.get('qty', 0) or 0) <= 0:
+            return None
+        lots = self._ensure_lots(pos)
+        buy_days = sorted([str(x.get('buy_day', '')).strip() for x in lots if str(x.get('buy_day', '')).strip()])
+        return {
+            'avg_price': float(pos.get('avg_price', 0.0) or 0.0),
+            'entry_day': buy_days[0] if buy_days else ''
+        }
+
     def execute_order(self, strategy_id, signal, kline, hu_bu_account=None):
         """
         Execute an order (buy/sell).
