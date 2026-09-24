@@ -1745,6 +1745,8 @@ class LiveCabinet:
                     'dt': str(current_dt)
                 })
                 
+                # 实盘信号产生时最新可得价格是本根K线收盘价，按开盘价成交相当于回到过去
+                signal.setdefault('fill_price', float(bar.get('close', 0.0) or 0.0))
                 executed = self.state_affairs.execute_order(strategy_id, signal, bar)
                 if executed:
                     audit_exec_success += 1

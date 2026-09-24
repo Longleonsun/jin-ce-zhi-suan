@@ -91,7 +91,10 @@ class BingBuWar:
             return False, 0.0
         if direction == 'SELL' and self._is_limit_down(kline):
             return False, 0.0
-        price = self._to_float(kline.get('open', 0.0))
+        # 止损/止盈、强制平仓等带明确成交价的指令按该价成交，其余按本根K线开盘价
+        price = self._to_float(order.get('fill_price', 0.0))
+        if price <= 0:
+            price = self._to_float(kline.get('open', 0.0))
         if price <= 0:
             return False, 0.0
         slippage = float(get_value("execution.slippage", SLIPPAGE))

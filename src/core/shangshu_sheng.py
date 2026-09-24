@@ -293,6 +293,7 @@ class ShangshuSheng:
                         'direction': 'SELL',
                         'qty': sellable_qty,
                         'price': price, # Trigger price
+                        'fill_price': price,
                         'type': 'MARKET' # Execute immediately
                     }
                     triggered_orders.append(order)

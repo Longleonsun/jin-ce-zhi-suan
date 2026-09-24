@@ -410,6 +410,41 @@ class BacktestCabinet:
             return 0.0
         return max(0.0, (float(peak) - float(fund_value)) / float(peak))
 
+    async def _execute_pending_signal(self, signal, kline):
+        sid = signal['strategy_id']
+        account = self.strategy_revenues.get(sid)
+        if account is None:
+            return False
+        if str(signal.get('direction', '')).upper() == 'SELL':
+            # 信号K线上可能已被引擎止损/止盈平掉，排队的卖单按剩余持仓执行
+            held = int(self.state_affairs.positions.get(sid, {}).get(signal['code'], {}).get('qty', 0) or 0)
+            if held <= 0:
+                return False
+            signal['qty'] = min(int(signal['qty']), held)
+        tx_count = len(account.transactions)
+        executed = self.state_affairs.execute_order(sid, signal, kline, hu_bu_account=account)
+        if not executed:
+            return False
+        new_qty = self.state_affairs.positions[sid][signal['code']]['qty'] if signal['code'] in self.state_affairs.positions.get(sid, {}) else 0
+        self.secretariat.update_strategy_state(sid, signal['code'], new_qty)
+        fill_price = float(account.transactions[-1]['price']) if len(account.transactions) > tx_count else float(signal['price'])
+        fill_qty = int(account.transactions[-1]['quantity']) if len(account.transactions) > tx_count else int(signal['qty'])
+        await self._emit('backtest_flow', {
+            'module': '尚书省',
+            'level': 'success',
+            'msg': f"执行成交: 策略 {sid} {signal['direction']} {signal['code']} @ {fill_price:.2f} x {fill_qty}（信号K线 {signal.get('dt')}）"
+        })
+        await self._emit('backtest_trade', {
+            'dt': str(kline['dt']),
+            'strategy': sid,
+            'code': signal['code'],
+            'dir': signal['direction'],
+            'price': fill_price,
+            'qty': fill_qty
+        })
+        await self._emit_account_snapshot(kline, active_strategy_id=sid, compliance_status="PASS")
+        return True
+
     async def _force_close_positions_at_end(self, kline):
         if not bool(self.config.get("execution.force_close_on_backtest_end", True)):
             return
@@ -429,6 +464,7 @@ class BacktestCabinet:
                     "direction": "SELL",
                     "qty": qty,
                     "price": float(kline.get("close", 0) or 0),
+                    "fill_price": float(kline.get("close", 0) or 0),
                     "reason": "FORCE_CLOSE_END"
                 }
                 executed = self.state_affairs.execute_order(sid, order, kline, hu_bu_account=account)
@@ -498,6 +534,7 @@ class BacktestCabinet:
                     "direction": "SELL",
                     "qty": qty,
                     "price": float(kline.get("close", 0) or 0),
+                    "fill_price": float(kline.get("close", 0) or 0),
                     "reason": "DRAWDOWN_LIMIT"
                 }
                 executed = self.state_affairs.execute_order(sid, order, kline, hu_bu_account=account)
@@ -816,6 +853,7 @@ class BacktestCabinet:
                 await self._emit('backtest_flow', {'module': '中书省', 'level': 'system', 'msg': f'策略周期映射: {strategy_trigger_tf}'})
             report_interval = max(1, total_bars // 50)
             op_counter = 0
+            pending_orders = []
             close_series = pd.to_numeric(df["close"], errors="coerce").ffill().bfill()
             ma5_series = Indicators.MA(close_series, 5).fillna(close_series)
             _, _, macd_series = Indicators.MACD(close_series)
@@ -910,7 +948,13 @@ class BacktestCabinet:
                     await self._emit_account_snapshot(kline, active_strategy_id=None, compliance_status="PASS")
                 drawdown_limited = await self._enforce_drawdown_limit(kline)
                 if drawdown_limited:
+                    pending_orders.clear()
                     continue
+                if pending_orders:
+                    queued, pending_orders = pending_orders, []
+                    for signal in queued:
+                        op_counter += 1
+                        await self._execute_pending_signal(signal, kline)
                 strategy_context = {}
                 for sid in runnable_strategy_ids:
                     account = self.strategy_revenues.get(sid)
@@ -981,28 +1025,12 @@ class BacktestCabinet:
                     })
                     if approved:
                         await self._emit('shangshu', {
-                            'msg': "准备执行交易指令",
+                            'msg': "准备执行交易指令（下一根K线开盘成交）",
                             'details': f"> 策略: {sid}<br>> 动作: {signal['direction']}<br>> 数量: {signal['qty']}",
                             'status': 'bg-trading-yellow'
                         })
-                        executed = self.state_affairs.execute_order(sid, signal, kline, hu_bu_account=account)
-                        if executed:
-                            new_qty = self.state_affairs.positions[sid][signal['code']]['qty'] if signal['code'] in self.state_affairs.positions.get(sid, {}) else 0
-                            self.secretariat.update_strategy_state(sid, signal['code'], new_qty)
-                            await self._emit('backtest_flow', {
-                                'module': '尚书省',
-                                'level': 'success',
-                                'msg': f"执行成交: 策略 {sid} {signal['direction']} {signal['code']} @ {float(signal['price']):.2f} x {signal['qty']}"
-                            })
-                            await self._emit('backtest_trade', {
-                                'dt': str(kline['dt']),
-                                'strategy': sid,
-                                'code': signal['code'],
-                                'dir': signal['direction'],
-                                'price': signal['price'],
-                                'qty': signal['qty']
-                            })
-                            await self._emit_account_snapshot(kline, active_strategy_id=sid, compliance_status="PASS")
+                        # 信号基于本根K线收盘价产生，只能在下一根K线开盘成交，避免用本根开盘价成交造成前视偏差
+                        pending_orders.append(signal)
                 triggered_orders = self.state_affairs.check_stops(kline)
                 for order in triggered_orders:
                     op_counter += 1
