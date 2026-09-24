@@ -19,6 +19,7 @@ from src.strategies.strategy_factory import create_strategies
 from src.utils.data_provider import DataProvider
 from src.utils.tushare_provider import TushareProvider
 from src.utils.akshare_provider import AkshareProvider
+from src.utils.yahoo_provider import YahooProvider
 from src.utils.mysql_provider import MysqlProvider
 from src.utils.postgres_provider import PostgresProvider
 from src.utils.duckdb_provider import DuckDbProvider
@@ -257,6 +258,8 @@ class BacktestCabinet:
             return TushareProvider(token=self.config.get("data_provider.tushare_token"))
         if source == 'akshare':
             return AkshareProvider()
+        if source == 'yahoo':
+            return YahooProvider()
         if source == 'mysql':
             return MysqlProvider()
         if source == 'postgresql':

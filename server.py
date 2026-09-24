@@ -61,6 +61,7 @@ from src.utils.stock_manager import stock_manager
 from src.utils.data_provider import DataProvider
 from src.utils.tushare_provider import TushareProvider
 from src.utils.akshare_provider import AkshareProvider
+from src.utils.yahoo_provider import YahooProvider
 from src.utils.mysql_provider import MysqlProvider
 from src.utils.postgres_provider import PostgresProvider
 from src.utils.duckdb_provider import DuckDbProvider
@@ -1759,6 +1760,8 @@ def _build_provider_by_source(source: str, cfg=None):
         return TushareProvider(token=c.get("data_provider.tushare_token"))
     if s == "akshare":
         return AkshareProvider()
+    if s == "yahoo":
+        return YahooProvider()
     if s == "mysql":
         return MysqlProvider()
     if s == "postgresql":
@@ -1857,6 +1860,8 @@ def _build_runtime_connectivity_provider(source: str, cfg: Dict[str, Any]):
         return provider
     if src == "akshare":
         return AkshareProvider()
+    if src == "yahoo":
+        return YahooProvider()
     if src == "mysql":
         provider = MysqlProvider(
             host=cfg.get("data_provider.mysql_host", "127.0.0.1"),
@@ -8982,6 +8987,8 @@ def _select_provider():
         return TushareProvider(token=cfg.get("data_provider.tushare_token"))
     if provider_source == "akshare":
         return AkshareProvider()
+    if provider_source == "yahoo":
+        return YahooProvider()
     if provider_source == "mysql":
         return MysqlProvider()
     if provider_source == "postgresql":
@@ -9753,8 +9760,8 @@ async def api_switch_strategy(req: StrategySwitchRequest):
 async def api_set_source(req: SourceSwitchRequest):
     global cabinet_task, current_provider_source, current_cabinet, config
     source = str(req.source or "").lower().strip()
-    if source not in {"default", "tushare", "akshare", "mysql", "postgresql", "duckdb", "tdx"}:
-        return {"status": "error", "msg": "source must be one of: default, tushare, akshare, mysql, postgresql, duckdb, tdx"}
+    if source not in {"default", "tushare", "akshare", "yahoo", "mysql", "postgresql", "duckdb", "tdx"}:
+        return {"status": "error", "msg": "source must be one of: default, tushare, akshare, yahoo, mysql, postgresql, duckdb, tdx"}
     cfg = ConfigLoader.reload()
     cfg.set("data_provider.source", source)
     cfg.save()

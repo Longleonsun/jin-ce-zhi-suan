@@ -1,5 +1,6 @@
 from src.utils.tushare_provider import TushareProvider
 from src.utils.akshare_provider import AkshareProvider
+from src.utils.yahoo_provider import YahooProvider
 from src.utils.data_provider import DataProvider
 from src.utils.mysql_provider import MysqlProvider
 from src.utils.postgres_provider import PostgresProvider
@@ -39,6 +40,8 @@ class DataFactory:
             
         elif self.source == 'akshare':
             return AkshareProvider()
+        elif self.source == 'yahoo':
+            return YahooProvider()
         elif self.source == 'mysql':
             return MysqlProvider()
         elif self.source == 'postgresql':
@@ -55,4 +58,4 @@ class DataFactory:
         return self.provider
 
 # 导出工具类，方便外部直接 import 使用
-__all__ = ['DataFactory', 'TushareProvider', 'AkshareProvider', 'MysqlProvider', 'PostgresProvider', 'DuckDbProvider', 'TdxProvider', 'DataProvider']
+__all__ = ['DataFactory', 'TushareProvider', 'AkshareProvider', 'YahooProvider', 'MysqlProvider', 'PostgresProvider', 'DuckDbProvider', 'TdxProvider', 'DataProvider']

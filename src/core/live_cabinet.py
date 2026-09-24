@@ -20,6 +20,7 @@ from src.utils.data_provider import DataProvider
 import asyncio
 from src.utils.tushare_provider import TushareProvider
 from src.utils.akshare_provider import AkshareProvider
+from src.utils.yahoo_provider import YahooProvider
 from src.utils.mysql_provider import MysqlProvider
 from src.utils.postgres_provider import PostgresProvider
 from src.utils.duckdb_provider import DuckDbProvider
@@ -47,6 +48,9 @@ class LiveCabinet:
         elif self.provider_type == 'akshare':
             self.provider = AkshareProvider()
             print("🌐 Data Source: Akshare (Free)")
+        elif self.provider_type == 'yahoo':
+            self.provider = YahooProvider()
+            print("🌐 Data Source: Yahoo Finance (Free)")
         elif self.provider_type == 'mysql':
             self.provider = MysqlProvider()
             print("🌐 Data Source: MySQL")
