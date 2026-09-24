@@ -77,6 +77,25 @@ class AkshareProvider:
         except Exception:
             return
 
+    def check_connectivity(self, code):
+        """Use daily data for connectivity check — works on weekends and holidays."""
+        try:
+            symbol = code.split('.')[0]
+            end = datetime.now()
+            start = end - timedelta(days=10)
+            df = ak.stock_zh_a_hist(
+                symbol=symbol,
+                period="daily",
+                start_date=start.strftime("%Y%m%d"),
+                end_date=end.strftime("%Y%m%d"),
+                adjust="qfq"
+            )
+            if df is not None and not df.empty:
+                return True, "ok"
+            return False, "akshare 日线数据为空"
+        except Exception as e:
+            return False, f"akshare 连通性检查异常: {e}"
+
     def get_latest_bar(self, code):
         """
         Get the latest real-time quote for a stock using Akshare.
@@ -89,47 +108,18 @@ class AkshareProvider:
             import time
             max_retries = 3
             df = None
-            
+
             for i in range(max_retries):
                 try:
-                    # Using stock_zh_a_spot_em can be slow/unstable if getting all stocks.
-                    # stock_zh_a_hist_min_em is usually more reliable for single stock.
-                    # But for "latest", we might just want the last 1min bar.
-                    # Let's use stock_zh_a_spot_em ONLY IF filtered (not possible directly usually).
-                    
-                    # Better: stock_bid_ask_em (Buy/Sell levels) - very fast for single stock
-                    # But we need OHLCV.
-                    
-                    # Let's stick to stock_zh_a_hist_min_em with a very short recent period?
-                    # Or try stock_zh_a_tick_tx_js (tick data) -> Agg to 1min? Too complex.
-                    
-                    # Actually, for reliability, let's use stock_zh_a_hist_min_em for now.
-                    # It might have 1 min delay but it's stable.
-                    
-                    # Get today's data?
                     now = datetime.now()
                     start_str = now.strftime("%Y-%m-%d 09:30:00")
                     end_str = now.strftime("%Y-%m-%d 15:00:00")
-                    
-                    # If before market, get yesterday?
-                    # Simplify: just get last available data without date filter (returns recent)
-                    # Akshare documentation says start_date/end_date are optional? 
-                    # If not provided, it returns recent?
-                    # Let's try providing recent range.
-                    
-                    # Actually, if we just want "latest price", stock_zh_a_spot_em is best but slow.
-                    # Let's try stock_zh_a_spot_em again, maybe it works better now.
-                    # Or 'stock_zh_a_hist_pre_min_em' (pre-market)?
-                    
-                    # Let's use `stock_zh_a_hist_min_em` with no date range (defaults to recent?)
-                    # Or just recent few minutes.
-                    
                     df = ak.stock_zh_a_hist_min_em(symbol=symbol, period='1', adjust='qfq')
                     self.last_error = ""
                     break
                 except Exception as e:
                     self.last_error = f"get_latest_bar_retry_failed attempt={i+1}/{max_retries} code={code} err={e}"
-                    time.sleep(1)
+                    time.sleep(2 ** i * 2)  # 2s, 4s, 8s
             
             if df is None or df.empty:
                 self.last_error = f"get_latest_bar_empty code={code}"
@@ -183,20 +173,17 @@ class AkshareProvider:
         print(f"📡 Requesting Akshare data for {symbol} from {start_str} to {end_str}...")
         
         try:
-            # Akshare stock_zh_a_hist_min_em
-            # Note: Akshare requests might be blocked or need retry.
-            # Adding a simple retry mechanism
             import time
             max_retries = 3
             df = None
-            
+
             for i in range(max_retries):
                 try:
                     df = ak.stock_zh_a_hist_min_em(
-                        symbol=symbol, 
-                        period='1', 
-                        adjust='qfq', 
-                        start_date=start_str, 
+                        symbol=symbol,
+                        period='1',
+                        adjust='qfq',
+                        start_date=start_str,
                         end_date=end_str
                     )
                     self.last_error = ""
@@ -204,7 +191,7 @@ class AkshareProvider:
                 except Exception as e:
                     self.last_error = f"fetch_minute_data_retry_failed attempt={i+1}/{max_retries} code={code} range={start_str}->{end_str} err={e}"
                     print(f"Retry {i+1}/{max_retries} failed: {e}")
-                    time.sleep(1)
+                    time.sleep(2 ** i * 3)  # 3s, 6s, 12s
             
             if df is None or df.empty:
                 self.last_error = f"fetch_minute_data_empty code={code} range={start_str}->{end_str}"
