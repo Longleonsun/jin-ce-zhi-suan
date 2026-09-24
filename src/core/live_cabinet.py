@@ -21,6 +21,7 @@ import asyncio
 from src.utils.tushare_provider import TushareProvider
 from src.utils.akshare_provider import AkshareProvider
 from src.utils.yahoo_provider import YahooProvider
+from src.utils.market_rules import market_profile
 from src.utils.mysql_provider import MysqlProvider
 from src.utils.postgres_provider import PostgresProvider
 from src.utils.duckdb_provider import DuckDbProvider
@@ -361,6 +362,20 @@ class LiveCabinet:
         tfs = self._active_strategy_timeframes()
         return bool(tfs) and all(tf == "D" for tf in tfs)
 
+    def _live_tick_interval(self):
+        """Return the finest active strategy timeframe for live bar fetching."""
+        tfs = self._active_strategy_timeframes()
+        if not tfs or "D" in tfs:
+            # 有日线策略时按分钟轮询：日线K线 dt 固定为 00:00，既不在交易时段内也不会随盘中推进；
+            # 30min 等K线的 dt 只落在整点/半点，碰不到收盘前的触发分钟（如美股 15:58）。
+            # 日线数据由 _fetch_latest_bar_for_timeframe 提供
+            return "1min"
+        order = ["1min", "5min", "10min", "15min", "30min", "60min"]
+        for tf in order:
+            if tf in tfs:
+                return tf
+        return "D"
+
     def _tf_resample_rule(self, timeframe):
         tf = self._normalize_trigger_tf(timeframe)
         mapping = {
@@ -464,7 +479,7 @@ class LiveCabinet:
             return self._resample_bar_from_1min(tf, current_dt)
         end_time = self._to_naive_ts(current_dt)
         if pd.isna(end_time):
-            end_time = pd.Timestamp(datetime.now())
+            end_time = pd.Timestamp(self._market_now())
         start_time = end_time - timedelta(days=self._tf_span_days(tf))
         providers = [self.provider]
         if self._tushare_fallback_provider is not None:
@@ -577,6 +592,19 @@ class LiveCabinet:
         bar["turnover"] = bar["amount"]
         return bar
 
+    def _market_profile(self):
+        return market_profile(getattr(self, "stock_code", ""))
+
+    def _market_tz(self):
+        tz_name = self._market_profile()["tz"]
+        if ZoneInfo is not None:
+            return ZoneInfo(tz_name)
+        return getattr(self, "_cn_tz", timezone(timedelta(hours=8)))
+
+    def _market_now(self):
+        """交易所当地时间（naive）。K线 dt 均为交易所当地时间，时段判断需用同一时钟。"""
+        return datetime.now(self._market_tz()).replace(tzinfo=None)
+
     def _to_naive_ts(self, dt_value):
         ts = pd.to_datetime(dt_value, errors="coerce")
         if pd.isna(ts):
@@ -584,10 +612,11 @@ class LiveCabinet:
         try:
             tz_obj = getattr(ts, "tz", None)
             if tz_obj is not None:
+                market_tz = self._market_tz()
                 try:
-                    ts = ts.tz_convert(self._cn_tz)
+                    ts = ts.tz_convert(market_tz)
                 except Exception:
-                    ts = ts.tz_localize(self._cn_tz)
+                    ts = ts.tz_localize(market_tz)
                 try:
                     ts = ts.tz_localize(None)
                 except Exception:
@@ -597,7 +626,7 @@ class LiveCabinet:
         return ts
 
     def _kline_delay_log_text(self, kline_dt, now_dt=None):
-        sys_dt = self._to_naive_ts(now_dt if now_dt is not None else datetime.now())
+        sys_dt = self._to_naive_ts(now_dt if now_dt is not None else self._market_now())
         kl_dt = self._to_naive_ts(kline_dt)
         if pd.isna(sys_dt) or pd.isna(kl_dt):
             return "🕒 K线时效: 系统时间=-- | 最新K线时间=-- | 延迟=--s"
@@ -628,7 +657,7 @@ class LiveCabinet:
         if self._kline_log_on_change_only and signature == str(self._last_logged_kline_signature or ""):
             return
         self._last_logged_kline_signature = signature
-        fetch_dt = self._to_naive_ts(datetime.now())
+        fetch_dt = self._to_naive_ts(self._market_now())
         fetch_time_text = fetch_dt.strftime("%Y-%m-%d %H:%M:%S") if not pd.isna(fetch_dt) else "--"
         volume_v = float(bar.get("volume", vol_v) or vol_v)
         turnover_v = float(bar.get("turnover", amount_v) or amount_v)
@@ -681,7 +710,7 @@ class LiveCabinet:
         return tf_data, latest
 
     def _pull_latest_minute_bar(self):
-        end_time = datetime.now()
+        end_time = self._market_now()
         start_time = end_time - timedelta(days=3)
         providers = [self.provider]
         if self._tushare_fallback_provider is not None:
@@ -741,7 +770,7 @@ class LiveCabinet:
     def _expected_latest_trade_date(self, now_dt):
         now_dt = pd.to_datetime(now_dt, errors="coerce")
         if pd.isna(now_dt):
-            now_dt = pd.Timestamp(datetime.now())
+            now_dt = pd.Timestamp(self._market_now())
         d = now_dt.date()
         wd = int(now_dt.weekday())
         if wd >= 5:
@@ -836,7 +865,7 @@ class LiveCabinet:
         return picked_code, picked_label, detail_text
 
     def _build_kline_freshness_snapshot(self, latest_map, now_dt=None, check_ok=True, message=""):
-        now_dt = pd.to_datetime(now_dt or datetime.now(), errors="coerce")
+        now_dt = pd.to_datetime(now_dt or self._market_now(), errors="coerce")
         expected_date = self._expected_latest_trade_date(now_dt)
         per_tf = []
         has_lag = False
@@ -886,6 +915,40 @@ class LiveCabinet:
             setattr(strategy, "history", history)
         history[str(stock_code)] = df.copy()
 
+    def _warmup_history_for_tf(self, tf, base_tf, base_df, tf_data):
+        """按策略自身周期准备预热历史：同基准周期直接用；否则优先用直接拉取的该周期数据，最后才由分钟线重采样。"""
+        if tf == base_tf:
+            return base_df
+        direct = tf_data.get(tf) if isinstance(tf_data, dict) else None
+        if direct is not None and not direct.empty:
+            return direct
+        if base_tf != "1min":
+            return pd.DataFrame()
+        return self._resample_minute_history(base_df, tf)
+
+    def _resample_minute_history(self, minute_df, tf):
+        if minute_df is None or minute_df.empty or "dt" not in minute_df.columns:
+            return pd.DataFrame()
+        work = minute_df.copy()
+        work["dt"] = pd.to_datetime(work["dt"], errors="coerce")
+        work = work.dropna(subset=["dt"]).set_index("dt").sort_index()
+        if "vol" not in work.columns:
+            work["vol"] = pd.to_numeric(work.get("volume", 0.0), errors="coerce").fillna(0.0)
+        if "amount" not in work.columns:
+            work["amount"] = pd.to_numeric(work.get("turnover", 0.0), errors="coerce").fillna(0.0)
+        agg_spec = {"open": "first", "high": "max", "low": "min", "close": "last", "vol": "sum", "amount": "sum"}
+        if tf == "D":
+            # 日线 dt 取当日 00:00，与数据源日线一致
+            agg = work.resample("1D", label="left", closed="left").agg(agg_spec)
+        else:
+            # 与实盘 _resample_bar_from_1min 的标注方式保持一致
+            agg = work.resample(self._tf_resample_rule(tf), label="right", closed="right").agg(agg_spec)
+        agg = agg.dropna(subset=["close"]).reset_index()
+        agg["code"] = str(self.stock_code)
+        agg["volume"] = agg["vol"]
+        agg["turnover"] = agg["amount"]
+        return agg
+
     def warm_up(self):
         """
         Load historical data to initialize strategy indicators.
@@ -895,15 +958,22 @@ class LiveCabinet:
         self.startup_kline_freshness = {}
         
         # Get latest time first to know where to look back from
-        latest = self.provider.get_latest_bar(self.stock_code)
+        _live_tf = self._live_tick_interval()
+        try:
+            latest = self.provider.get_latest_bar(self.stock_code, _live_tf)
+        except TypeError:
+            latest = self.provider.get_latest_bar(self.stock_code)
         if (not latest) and self._tushare_fallback_provider is not None:
-            latest = self._tushare_fallback_provider.get_latest_bar(self.stock_code)
+            try:
+                latest = self._tushare_fallback_provider.get_latest_bar(self.stock_code, _live_tf)
+            except TypeError:
+                latest = self._tushare_fallback_provider.get_latest_bar(self.stock_code)
         if not latest:
             print("❌ 无法获取最新行情，预热失败。")
             reason_code, reason_label, reason_detail = self._startup_failure_context()
             self.startup_kline_freshness = self._build_kline_freshness_snapshot(
                 latest_map={},
-                now_dt=datetime.now(),
+                now_dt=self._market_now(),
                 check_ok=False,
                 message="无法获取最新行情"
             )
@@ -936,7 +1006,7 @@ class LiveCabinet:
                 reason_code, reason_label = "CODE_NO_DATA", "代码无数据"
             self.startup_kline_freshness = self._build_kline_freshness_snapshot(
                 latest_map=latest_map,
-                now_dt=datetime.now(),
+                now_dt=self._market_now(),
                 check_ok=False,
                 message="历史K线为空"
             )
@@ -960,17 +1030,27 @@ class LiveCabinet:
         if not strategies_to_warm:
             print("⚠️ 未匹配到可用策略，预热跳过。")
             return True
-        last_bar = df.iloc[-1]
+        base_tf = "D" if pure_daily_mode else "1min"
         for strategy in strategies_to_warm:
-            self._prime_strategy_history(strategy, self.stock_code, df)
+            tf = self._normalize_trigger_tf(getattr(strategy, "trigger_timeframe", "1min"))
+            hist = self._warmup_history_for_tf(tf, base_tf, df, tf_data)
+            if hist is None or hist.empty:
+                print(f"⚠️ 策略 {strategy.id} 缺少 {tf} 历史K线，预热跳过")
+                continue
+            self._prime_strategy_history(strategy, self.stock_code, hist)
             try:
-                strategy.on_bar(last_bar)
+                strategy.on_bar(hist.iloc[-1])
             except Exception as e:
                 print(f"⚠️ 策略预热失败 id={strategy.id} err={e}")
-            
-        self.last_dt = df.iloc[-1]['dt']
+            print(f"   策略 {strategy.id} 预热 {tf} K线 {len(hist)} 条")
+
+        # 分钟缓冲区只放分钟K线：纯日线模式实盘仍按分钟轮询，混入日线会污染盘中重采样
+        buffer_df = df if not pure_daily_mode else tf_data.get("1min")
+        if buffer_df is None or buffer_df.empty:
+            buffer_df = pd.DataFrame()
+        self.last_dt = buffer_df.iloc[-1]['dt'] if not buffer_df.empty else df.iloc[-1]['dt']
         try:
-            preload = df[["dt", "code", "open", "high", "low", "close", "vol", "amount"]].tail(5000).copy()
+            preload = buffer_df[["dt", "code", "open", "high", "low", "close", "vol", "amount"]].tail(5000).copy()
             preload["dt"] = pd.to_datetime(preload["dt"], errors="coerce")
             preload = preload.dropna(subset=["dt"])
             self.daily_data_buffer = [row for row in preload.to_dict("records")]
@@ -979,7 +1059,7 @@ class LiveCabinet:
         latest_text = ", ".join([f"{k}:{v}" for k, v in sorted(latest_map.items(), key=lambda x: x[0])]) if latest_map else "无"
         self.startup_kline_freshness = self._build_kline_freshness_snapshot(
             latest_map=latest_map,
-            now_dt=datetime.now(),
+            now_dt=self._market_now(),
             check_ok=True,
             message="启动校验完成"
         )
@@ -1160,7 +1240,7 @@ class LiveCabinet:
     def _build_daily_summary_payload(self, current_dt):
         dt_obj = pd.to_datetime(current_dt, errors="coerce")
         if pd.isna(dt_obj):
-            dt_obj = pd.to_datetime(datetime.now(), errors="coerce")
+            dt_obj = pd.to_datetime(self._market_now(), errors="coerce")
         day_text = dt_obj.strftime("%Y-%m-%d")
         tx_today = []
         for tx in self.revenue.transactions:
@@ -1358,9 +1438,12 @@ class LiveCabinet:
         if timeframe == "60min":
             return minute == 0
         if timeframe == "D":
-            if bool(getattr(self, "_minute_close_confirm_enabled", False)):
-                return hour == 14 and minute == 59
-            return hour >= 15 and minute == 0
+            profile = self._market_profile()
+            hm = hour * 60 + minute
+            if not (profile["daily_trigger"] <= hm < profile["close"]):
+                return False
+            # 触发窗口可能跨多分钟，同一交易日只触发一次
+            return getattr(self, "_daily_tick_day", "") != pd.Timestamp(dt).strftime("%Y-%m-%d")
         return True
 
     def _is_market_session_time(self, dt_obj):
@@ -1369,19 +1452,22 @@ class LiveCabinet:
             return False
         if not self._is_trading_day(dt):
             return False
-        hhmm = int(dt.hour) * 100 + int(dt.minute)
-        in_morning = 930 <= hhmm < 1130
-        in_afternoon = 1300 <= hhmm < 1500
-        return in_morning or in_afternoon
+        hm = int(dt.hour) * 60 + int(dt.minute)
+        return any(start <= hm < end for start, end in self._market_profile()["sessions"])
 
     def _get_runnable_strategy_ids(self, current_dt):
         runnable = []
+        daily_fired = False
         for sid in self.active_strategy_ids:
             if sid is None:
                 continue
             tf = self._normalize_trigger_tf(self.strategy_trigger_tf.get(sid, "1min"))
             if self._is_timeframe_tick(current_dt, tf):
                 runnable.append(sid)
+                if tf == "D":
+                    daily_fired = True
+        if daily_fired:
+            self._daily_tick_day = pd.Timestamp(current_dt).strftime("%Y-%m-%d")
         return runnable
 
     def _format_tick_trigger_log(self, runnable_strategy_ids):
@@ -1410,18 +1496,25 @@ class LiveCabinet:
         current_dt = None
         bar = None
         api_latency_ms = 0
-        now_wall = datetime.now()
+        now_wall = self._market_now()
         should_stop = await self._check_market_close(now_wall)
         if should_stop:
             return True
 
-        self._announce_kline_fetching(timeframe="1min")
+        _live_tf = self._live_tick_interval()
+        self._announce_kline_fetching(timeframe=_live_tf)
         t0 = time.perf_counter()
-        bar = await asyncio.to_thread(self.provider.get_latest_bar, self.stock_code)
+        try:
+            bar = await asyncio.to_thread(self.provider.get_latest_bar, self.stock_code, _live_tf)
+        except TypeError:
+            bar = await asyncio.to_thread(self.provider.get_latest_bar, self.stock_code)
         api_latency_ms = int((time.perf_counter() - t0) * 1000)
         if (not bar) and self._tushare_fallback_provider is not None:
             t0 = time.perf_counter()
-            bar = await asyncio.to_thread(self._tushare_fallback_provider.get_latest_bar, self.stock_code)
+            try:
+                bar = await asyncio.to_thread(self._tushare_fallback_provider.get_latest_bar, self.stock_code, _live_tf)
+            except TypeError:
+                bar = await asyncio.to_thread(self._tushare_fallback_provider.get_latest_bar, self.stock_code)
             api_latency_ms = int((time.perf_counter() - t0) * 1000)
         if not bar:
             repaired = await asyncio.to_thread(self._pull_latest_minute_bar)
@@ -1467,12 +1560,12 @@ class LiveCabinet:
                     bar = repaired
                     current_dt = repaired_dt
             if self.last_dt is not None and (not pd.isna(self.last_dt)) and current_dt <= self.last_dt:
-                if (datetime.now() - current_dt) > timedelta(days=1):
+                if (self._market_now() - current_dt) > timedelta(days=1):
                     print(f"⚠️ 最新K线时间疑似过旧: {current_dt}")
                 print(f"⏳ 等待K线更新... (当前: {current_dt}) | {self._kline_delay_log_text(current_dt)}", end='\r')
             return False
         self.last_dt = current_dt
-        now_wall = datetime.now()
+        now_wall = self._market_now()
         future_bar = bool((current_dt is not None) and (not pd.isna(current_dt)) and (current_dt > (now_wall + timedelta(minutes=1))))
         if future_bar:
             current_dt = now_wall.replace(second=0, microsecond=0)
@@ -1771,8 +1864,9 @@ class LiveCabinet:
         last_dt = pd.to_datetime(self._last_summary_tick_dt, errors="coerce") if self._last_summary_tick_dt is not None else pd.NaT
         self._last_summary_tick_dt = dt_obj
 
-        summary_cutoff = dt_obj.replace(hour=15, minute=5, second=0, microsecond=0)
-        stop_cutoff = dt_obj.replace(hour=15, minute=30, second=0, microsecond=0)
+        profile = self._market_profile()
+        summary_cutoff = dt_obj.replace(hour=profile["summary"] // 60, minute=profile["summary"] % 60, second=0, microsecond=0)
+        stop_cutoff = dt_obj.replace(hour=profile["auto_stop"] // 60, minute=profile["auto_stop"] % 60, second=0, microsecond=0)
         reached_summary_cutoff = dt_obj >= summary_cutoff and (pd.isna(last_dt) or last_dt < summary_cutoff)
         reached_stop_cutoff = dt_obj >= stop_cutoff and (pd.isna(last_dt) or last_dt < stop_cutoff)
 
@@ -1792,7 +1886,7 @@ class LiveCabinet:
         should_auto_stop = self._is_trading_day(dt_obj) and reached_stop_cutoff and (self._daily_auto_stop_day != day_text)
         if should_auto_stop:
             self._daily_auto_stop_day = day_text
-            stop_msg = f"已超过15:30，自动关闭实盘模式：{day_text}"
+            stop_msg = f"已超过{stop_cutoff.strftime('%H:%M')}（交易所时间），自动关闭实盘模式：{day_text}"
             print(f"🛑 {stop_msg}")
             await self._emit_event("system", {
                 "msg": stop_msg,

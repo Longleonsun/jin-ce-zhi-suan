@@ -675,7 +675,13 @@ class BacktestCabinet:
                 return
             await self._emit('backtest_flow', {'module': '工部', 'level': 'success', 'msg': f'数据源连通性检查通过: {provider_source}'})
             strategy_trigger_tf = {s.id: self._normalize_trigger_tf(getattr(s, "trigger_timeframe", "1min")) for s in self.strategies}
-            base_interval = "D" if strategy_trigger_tf and all(tf == "D" for tf in strategy_trigger_tf.values()) else "1min"
+            _all_tfs = set(strategy_trigger_tf.values()) if strategy_trigger_tf else {"1min"}
+            if all(tf == "D" for tf in _all_tfs):
+                base_interval = "D"
+            elif len(_all_tfs) == 1:
+                base_interval = next(iter(_all_tfs))  # all strategies share one non-daily tf → use it directly
+            else:
+                base_interval = "1min"
             df = self._cache_get(start_date, end_date, base_interval, provider_source)
             if df.empty:
                 await self._emit('backtest_progress', {
