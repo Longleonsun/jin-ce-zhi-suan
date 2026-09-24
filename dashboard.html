@@ -6813,6 +6813,15 @@ class GeneratedStrategyTemplate(BaseImplementedStrategy):
                 ]
             },
             {
+                title: '户部成本（美股）',
+                subtitle: '美股无印花税与T+1；卖出费率默认为 SEC 费，佣金按券商填写',
+                fields: [
+                    { path: 'trading_cost_us.commission_rate', label: '美股手续费率', type: 'number', min: 0, max: 0.01, step: 0.00001, slider: true },
+                    { path: 'trading_cost_us.min_commission', label: '美股最低手续费', type: 'number', unit: '美元', min: 0, max: 100, step: 0.1, slider: true },
+                    { path: 'trading_cost_us.stamp_duty', label: '美股卖出费率', type: 'number', min: 0, max: 0.01, step: 0.0000001, slider: true }
+                ]
+            },
+            {
                 title: '兵部执行',
                 subtitle: '成交滑点与执行偏差',
                 fields: [

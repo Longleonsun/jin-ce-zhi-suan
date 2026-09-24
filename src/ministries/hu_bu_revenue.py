@@ -2,6 +2,7 @@
 import pandas as pd
 from src.utils.constants import *
 from src.utils.runtime_params import get_value
+from src.utils.market_rules import is_us_symbol, market_profile
 
 class HuBuRevenue:
     """
@@ -16,16 +17,23 @@ class HuBuRevenue:
         self.total_stamp_duty = 0.0
         self.total_transfer_fee = 0.0
 
-    def calculate_cost(self, amount, direction, price, quantity):
+    def calculate_cost(self, amount, direction, price, quantity, code=None):
         """
         Calculate transaction cost.
         Returns: (total_cost, commission, stamp_duty, transfer_fee)
         """
-        # Commission: Max(5, amount * 0.00025)
-        min_commission = float(get_value("trading_cost.min_commission", MIN_COMMISSION))
-        commission_rate = float(get_value("trading_cost.commission_rate", COMMISSION_RATE))
-        stamp_duty_rate = float(get_value("trading_cost.stamp_duty", STAMP_DUTY))
-        transfer_fee_rate = float(get_value("trading_cost.transfer_fee", TRANSFER_FEE))
+        # 按标的市场取费率：A股读 trading_cost，美股读 trading_cost_us
+        if code is not None and is_us_symbol(code):
+            profile = market_profile(code)
+            key, defaults = profile["cost_config_key"], profile["cost_defaults"]
+        else:
+            key = "trading_cost"
+            defaults = {"commission_rate": COMMISSION_RATE, "min_commission": MIN_COMMISSION, "stamp_duty": STAMP_DUTY, "transfer_fee": TRANSFER_FEE}
+        # Commission: Max(min_commission, amount * commission_rate)
+        min_commission = float(get_value(f"{key}.min_commission", defaults["min_commission"]))
+        commission_rate = float(get_value(f"{key}.commission_rate", defaults["commission_rate"]))
+        stamp_duty_rate = float(get_value(f"{key}.stamp_duty", defaults["stamp_duty"]))
+        transfer_fee_rate = float(get_value(f"{key}.transfer_fee", defaults["transfer_fee"]))
         commission = max(min_commission, amount * commission_rate)
         
         # Stamp Duty: 0.1% on SELL only

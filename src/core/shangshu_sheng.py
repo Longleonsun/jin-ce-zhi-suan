@@ -4,6 +4,7 @@ from src.ministries.hu_bu_revenue import HuBuRevenue
 from src.ministries.bing_bu_war import BingBuWar
 from src.ministries.xing_bu_justice import XingBuJustice
 from src.utils.constants import *
+from src.utils.market_rules import lot_size_for_code, is_t_plus_one
 import pandas as pd
 
 class ShangshuSheng:
@@ -66,11 +67,13 @@ class ShangshuSheng:
         buy_days = sorted([str(x.get('buy_day', '')).strip() for x in lots if str(x.get('buy_day', '')).strip()])
         pos['last_buy_day'] = buy_days[-1] if buy_days else ''
 
-    def _sellable_qty_t1(self, pos, curr_day):
+    def _sellable_qty_t1(self, pos, curr_day, code=None):
         lots = self._ensure_lots(pos)
+        if code is not None and not is_t_plus_one(code):
+            return sum(int(x.get('qty', 0) or 0) for x in lots)
         return sum(int(x.get('qty', 0) or 0) for x in lots if str(x.get('buy_day', '')).strip() != str(curr_day or '').strip())
 
-    def _consume_lots_fifo(self, pos, sell_qty, curr_day):
+    def _consume_lots_fifo(self, pos, sell_qty, curr_day, t_plus_one=True):
         lots = self._ensure_lots(pos)
         need = int(sell_qty or 0)
         consumed = []
@@ -78,7 +81,7 @@ class ShangshuSheng:
             if need <= 0:
                 break
             lot_day = str(lot.get('buy_day', '')).strip()
-            if lot_day == str(curr_day or '').strip():
+            if t_plus_one and lot_day == str(curr_day or '').strip():
                 continue
             can_take = min(int(lot.get('qty', 0) or 0), need)
             if can_take <= 0:
@@ -90,7 +93,10 @@ class ShangshuSheng:
             return None
         pos['lots'] = [x for x in lots if int(x.get('qty', 0) or 0) > 0]
         return consumed
-        
+
+    def _lot_size(self, code):
+        return lot_size_for_code(code)
+
     def execute_order(self, strategy_id, signal, kline, hu_bu_account=None):
         """
         Execute an order (buy/sell).
@@ -99,7 +105,7 @@ class ShangshuSheng:
         code = signal['code']
         qty = int(float(signal['qty']))
         hu_bu = hu_bu_account if hu_bu_account is not None else self.hu_bu
-        lot_size = 100
+        lot_size = self._lot_size(code)
         if direction not in {'BUY', 'SELL'}:
             self.xing_bu.record_rejection(strategy_id, 'EXEC_DIR_INVALID', f"Invalid direction: {direction}", kline['dt'])
             return False
@@ -125,14 +131,14 @@ class ShangshuSheng:
                 self.xing_bu.record_rejection(strategy_id, 'EXEC_NO_CASH', "No available cash", kline['dt'])
                 return False
             amount_probe = fill_price * qty
-            cost_probe, _, _, _ = hu_bu.calculate_cost(amount_probe, direction, fill_price, qty)
+            cost_probe, _, _, _ = hu_bu.calculate_cost(amount_probe, direction, fill_price, qty, code=code)
             if amount_probe + cost_probe > cash_available:
                 lo, hi = 0, qty // lot_size
                 while lo < hi:
                     mid = (lo + hi + 1) // 2
                     mid_qty = mid * lot_size
                     mid_amount = fill_price * mid_qty
-                    mid_cost, _, _, _ = hu_bu.calculate_cost(mid_amount, direction, fill_price, mid_qty)
+                    mid_cost, _, _, _ = hu_bu.calculate_cost(mid_amount, direction, fill_price, mid_qty, code=code)
                     if mid_amount + mid_cost <= cash_available:
                         lo = mid
                     else:
@@ -142,7 +148,7 @@ class ShangshuSheng:
                     self.xing_bu.record_rejection(strategy_id, 'EXEC_NO_CASH', "Insufficient cash after fee/slippage", kline['dt'])
                     return False
         amount = fill_price * qty
-        cost, comm, stamp, transfer = hu_bu.calculate_cost(amount, direction, fill_price, qty)
+        cost, comm, stamp, transfer = hu_bu.calculate_cost(amount, direction, fill_price, qty, code=code)
         
         # Update Position
         if direction == 'BUY':
@@ -196,11 +202,11 @@ class ShangshuSheng:
                 self.xing_bu.record_rejection(strategy_id, 'EXEC_LOT_BLOCK', f"SELL qty must be lot-sized or equal to full position ({pos_qty})", kline['dt'])
                 return False
             curr_day = self._trade_day(kline.get('dt'))
-            sellable_qty = self._sellable_qty_t1(pos, curr_day)
+            sellable_qty = self._sellable_qty_t1(pos, curr_day, code)
             if qty > sellable_qty:
                 self.xing_bu.record_rejection(strategy_id, 'EXEC_T1_BLOCK', f"T+1 block: {code} sellable {sellable_qty} < request {qty}", kline['dt'])
                 return False
-            consumed = self._consume_lots_fifo(pos, qty, curr_day)
+            consumed = self._consume_lots_fifo(pos, qty, curr_day, t_plus_one=is_t_plus_one(code))
             if consumed is None:
                 self.xing_bu.record_rejection(strategy_id, 'EXEC_T1_BLOCK', f"T+1 block: {code} insufficient sellable lots", kline['dt'])
                 return False
@@ -261,7 +267,7 @@ class ShangshuSheng:
             if code in stocks:
                 pos = stocks[code]
                 curr_day = self._trade_day(kline.get('dt'))
-                sellable_qty = self._sellable_qty_t1(pos, curr_day)
+                sellable_qty = self._sellable_qty_t1(pos, curr_day, code)
                 if sellable_qty <= 0:
                     continue
                 triggered, type_, price = self.bing_bu.check_stop_orders(pos, kline)

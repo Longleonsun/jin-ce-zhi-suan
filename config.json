@@ -149,6 +149,12 @@
     "stamp_duty": 0.001,
     "transfer_fee": 0
   },
+  "trading_cost_us": {
+    "commission_rate": 0.0,
+    "min_commission": 0.0,
+    "stamp_duty": 0.0000278,
+    "transfer_fee": 0
+  },
   "execution": {
     "slippage": 0.001,
     "settlement_rule": "T+1"
