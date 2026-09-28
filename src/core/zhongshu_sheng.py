@@ -1,6 +1,7 @@
 # src/core/zhongshu_sheng.py
 
 from src.utils.runtime_params import get_value
+from src.utils.market_rules import lot_size_for_code
 
 class ZhongshuSheng:
     """
@@ -36,10 +37,11 @@ class ZhongshuSheng:
                 if isinstance(scoped_ctx, dict) and scoped_ctx:
                     strategy.set_backtest_context(**scoped_ctx)
             kline_for_strategy = strategy_kline_map.get(strategy.id, kline)
+            strategy.current_code = kline_for_strategy.get("code")
             signal = strategy.on_bar(kline_for_strategy)
             if signal:
                 if "qty" not in signal or signal.get("qty") is None:
-                    signal["qty"] = self._resolve_fallback_qty(strategy)
+                    signal["qty"] = self._resolve_fallback_qty(strategy, signal.get("code"))
                 qty = int(float(signal.get("qty", 0)))
                 if qty <= 0:
                     continue
@@ -47,10 +49,10 @@ class ZhongshuSheng:
                 signals.append(signal)
         return signals
 
-    def _resolve_fallback_qty(self, strategy):
+    def _resolve_fallback_qty(self, strategy, code=None):
         if hasattr(strategy, "_qty"):
             try:
-                return int(float(strategy._qty()))
+                return int(float(strategy._qty(code)))
             except Exception:
                 pass
         mode = str(get_value("strategy_params.common.order_qty_mode", "fixed")).strip().lower()
@@ -64,7 +66,8 @@ class ZhongshuSheng:
             if cash <= 0 or price <= 0 or pct <= 0:
                 return 0
             raw_qty = int((cash * pct) // price)
-            return int((raw_qty // 100) * 100)
+            lot = lot_size_for_code(code or getattr(strategy, "current_code", None))
+            return int((raw_qty // lot) * lot)
         return int(float(get_value("strategy_params.common.order_qty", 1000)))
 
     def update_strategy_state(self, strategy_id, code, position_qty):

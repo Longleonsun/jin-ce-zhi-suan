@@ -22,6 +22,11 @@ class BaseImplementedStrategy(BaseStrategy):
         self.available_cash = 0.0
         self.total_value = 0.0
         self.last_price = 0.0
+        self.current_code = None # 当前处理的标的，由中书省在 on_bar 前写入
+
+    def _lot_size(self, code=None):
+        """下单单位：A股 100 股（一手），美股 1 股；未知标的按 A股处理。"""
+        return lot_size_for_code(code or self.current_code)
 
     def update_holding_time(self, code):
         if code in self.positions and self.positions[code] > 0:
@@ -54,7 +59,7 @@ class BaseImplementedStrategy(BaseStrategy):
         common = get_value(f"strategy_params.common.{key}", None)
         return common if common is not None else default
 
-    def _qty(self):
+    def _qty(self, code=None):
         mode = str(self._cfg("order_qty_mode", "fixed")).strip().lower()
         fixed_qty = int(float(self._cfg("order_qty", 1000)))
         if mode != "cash_pct":
@@ -72,7 +77,7 @@ class BaseImplementedStrategy(BaseStrategy):
         if cash <= 0 or price <= 0 or pct <= 0:
             return 0
         raw_qty = int((cash * pct) // price)
-        lot_size = 100
+        lot_size = self._lot_size(code)
         lot_qty = (raw_qty // lot_size) * lot_size
         return max(0, lot_qty)
 
@@ -103,7 +108,8 @@ class Strategy00(BaseImplementedStrategy):
             price = float(kline.get('close', 0.0))
             cash = float(getattr(self, "current_cash", 0.0) or 0.0)
             raw_qty = int(cash // price) if price > 0 else 0
-            buy_qty = (raw_qty // 100) * 100
+            lot = self._lot_size(code)
+            buy_qty = (raw_qty // lot) * lot
             if buy_qty <= 0:
                 return None
             return {
@@ -512,8 +518,9 @@ class Strategy09(BaseImplementedStrategy):
         base_build_rsi = float(self._cfg("base_build_rsi", 35))
         buy_zone_ratio = float(self._cfg("buy_zone_ratio", 0.15))
         sell_zone_ratio = float(self._cfg("sell_zone_ratio", 0.15))
-        base_qty = int(self._cfg("base_order_qty", max(100, self._qty())))
-        dynamic_qty = int(self._cfg("dynamic_order_qty", max(100, int(base_qty * 0.35))))
+        lot = self._lot_size(code)
+        base_qty = int(self._cfg("base_order_qty", max(lot, self._qty(code))))
+        dynamic_qty = int(self._cfg("dynamic_order_qty", max(lot, int(base_qty * 0.35))))
         max_dynamic_qty = int(self._cfg("max_dynamic_qty", dynamic_qty * 3))
         stop_loss_pct = float(self._cfg("stop_loss_pct", 0.05))
         if code not in self.strategy_active:
@@ -645,9 +652,9 @@ class Strategy10(BaseImplementedStrategy):
             trend_ok = float(ma5.iloc[-1]) > float(ma20.iloc[-1]) and curr_close > float(ma20.iloc[-1])
             momentum_ok = 2.0 <= change_5d <= 25.0
             if trend_ok and momentum_ok and (not self._is_limit_up(kline)):
-                buy_qty = int(self._qty())
+                buy_qty = int(self._qty(code))
                 if buy_qty <= 0:
-                    buy_qty = 100
+                    buy_qty = self._lot_size(code)
                 _same, day_text = self._same_day(code, kline.get("dt"))
                 self.last_buy_day[code] = day_text
                 self.entry_price_local[code] = curr_close
