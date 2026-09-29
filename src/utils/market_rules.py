@@ -1,6 +1,8 @@
 # src/utils/market_rules.py
 """标的所属市场规则：下单单位（A股整百股，美股1股）与交易时段。"""
 
+import re
+
 _US_SUFFIXES = (".US", ".O", ".N", ".NASDAQ", ".NYSE")
 
 
@@ -9,6 +11,14 @@ def is_us_symbol(code):
     if c.endswith(_US_SUFFIXES):
         return True
     return bool(c) and c.replace("-", "").replace(".", "").isalpha()
+
+
+def is_cn_fund(code):
+    """A股场内基金（ETF/LOF/REITs 等）：沪市 5 开头，深市 15/16/18 开头。基金买卖免印花税和过户费。"""
+    if is_us_symbol(code):
+        return False
+    m = re.search(r"\d{6}", str(code or ""))
+    return bool(m) and m.group(0).startswith(("5", "15", "16", "18"))
 
 
 def lot_size_for_code(code):

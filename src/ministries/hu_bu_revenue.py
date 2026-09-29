@@ -2,7 +2,7 @@
 import pandas as pd
 from src.utils.constants import *
 from src.utils.runtime_params import get_value
-from src.utils.market_rules import is_us_symbol, market_profile
+from src.utils.market_rules import is_cn_fund, is_us_symbol, market_profile
 
 class HuBuRevenue:
     """
@@ -35,6 +35,9 @@ class HuBuRevenue:
         stamp_duty_rate = float(get_value(f"{key}.stamp_duty", defaults["stamp_duty"]))
         transfer_fee_rate = float(get_value(f"{key}.transfer_fee", defaults["transfer_fee"]))
         commission = max(min_commission, amount * commission_rate)
+        # 印花税、过户费只对股票征收，场内基金免收
+        if is_cn_fund(code):
+            stamp_duty_rate = transfer_fee_rate = 0.0
         
         # Stamp Duty: 0.1% on SELL only
         stamp_duty = 0.0
