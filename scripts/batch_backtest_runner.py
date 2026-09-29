@@ -64,6 +64,11 @@ from src.utils.config_loader import ConfigLoader
     ("盈亏比", "profit_factor"),
     ("卡玛比", "calmar"),
     ("夏普比", "sharpe"),
+    ("同期持有年化", "bh_annual_return"),
+    ("同期持有回撤", "bh_max_drawdown"),
+    ("上涨区捕获率", "up_capture"),
+    ("下跌区策略收益", "down_strategy_return"),
+    ("下跌区持有收益", "down_bh_return"),
     ("违规次数", "violations"),
     ("拒单次数", "rejections"),
     ("熔断次数", "circuit_breaks"),
@@ -130,6 +135,11 @@ from src.utils.config_loader import ConfigLoader
     "profit_factor",
     "calmar",
     "sharpe",
+    "bh_annual_return",
+    "bh_max_drawdown",
+    "up_capture",
+    "down_strategy_return",
+    "down_bh_return",
     "violations",
     "rejections",
     "circuit_breaks",
@@ -1054,6 +1064,7 @@ def 单任务执行(
                 continue
             return 返回结果(False, "failed", report_id, report_err)
         metric = 选取指标(report, strategy_id)
+        benchmark = metric.get("benchmark") if isinstance(metric.get("benchmark"), dict) else {}
         score_raw, score_penalty, score_final, grade, decision = 自动评分(metric)
         任务目录 = ""
         if 任务明细根目录 is not None:
@@ -1075,6 +1086,12 @@ def 单任务执行(
             "profit_factor": 转浮点(metric.get("profit_factor", metric.get("profit_ratio", 0.0)), 0.0),
             "calmar": 转浮点(metric.get("calmar", 0.0), 0.0),
             "sharpe": 转浮点(metric.get("sharpe", 0.0), 0.0),
+            # 与同期持有对比；无法计算时留空（如持有在上涨区未盈利时不给捕获率）
+            "bh_annual_return": benchmark.get("bh_annual_return", ""),
+            "bh_max_drawdown": benchmark.get("bh_max_dd", ""),
+            "up_capture": "" if benchmark.get("up_capture") is None else benchmark.get("up_capture"),
+            "down_strategy_return": benchmark.get("down_strategy_return", ""),
+            "down_bh_return": benchmark.get("down_bh_return", ""),
             "violations": 转整数(metric.get("violations", 0), 0),
             "rejections": 转整数(metric.get("rejections", 0), 0),
             "circuit_breaks": 转整数(metric.get("circuit_breaks", 0), 0),

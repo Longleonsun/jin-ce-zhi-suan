@@ -97,6 +97,7 @@ class BacktestCabinet:
         self.strategy_initial_capital = self.initial_capital / strategy_count
         self.strategy_revenues = {s.id: HuBuRevenue(self.strategy_initial_capital) for s in self.strategies}
         self.aggregate_nav = []
+        self._daily_nav = {}  # 策略ID -> [(日期, 当日收盘净值)]
         self.drawdown_above_limit = False
         self._event_queue = None
         self._event_task = None
@@ -407,6 +408,22 @@ class BacktestCabinet:
                     if not task.done():
                         task.cancel()
                     return pd.DataFrame(), f'拉取超时（{timeout_sec}s）'
+
+    def _record_daily_nav(self, kline):
+        """按收盘价给每个策略估值并记入当日净值（同一天多次调用时以最后一次为准）。"""
+        prices = {kline['code']: kline['close']}
+        day = pd.to_datetime(kline['dt']).normalize()
+        for sid, account in self.strategy_revenues.items():
+            nav = float(account.cash) + self.state_affairs.update_strategy_holdings_value(sid, prices)
+            rows = self._daily_nav.setdefault(sid, [])
+            if rows and rows[-1][0] == day:
+                rows[-1] = (day, nav)
+            else:
+                rows.append((day, nav))
+
+    def _daily_nav_series(self, sid):
+        rows = self._daily_nav.get(sid, [])
+        return pd.Series([v for _, v in rows], index=pd.DatetimeIndex([d for d, _ in rows]), dtype=float)
 
     def _compute_portfolio_snapshot(self, current_prices, exclude_exempt=False):
         holdings_value = 0.0
@@ -837,6 +854,8 @@ class BacktestCabinet:
             await self._emit('system', {'msg': f"已获取 {total_bars} 条K线数据，正在初始化策略..."})
             await self._emit('backtest_flow', {'module': '工部', 'level': 'system', 'msg': f'数据清洗完成，共 {total_bars} 条分钟K线'})
             day_end_dt_set = set(pd.to_datetime(df.groupby(df["dt"].dt.date)["dt"].max()).tolist())
+            daily_close = pd.to_numeric(df.groupby(df["dt"].dt.normalize())["close"].last(), errors="coerce")
+            self._daily_nav = {}
             final_bar_dt = pd.to_datetime(df.iloc[-1]["dt"])
             for strategy in self.strategies:
                 strategy.set_backtest_context(final_bar_dt=final_bar_dt)
@@ -977,6 +996,8 @@ class BacktestCabinet:
                 drawdown_limited = await self._enforce_drawdown_limit(kline)
                 if drawdown_limited:
                     pending_orders.clear()
+                    if current_dt in day_end_dt_set:
+                        self._record_daily_nav(kline)
                     continue
                 if pending_orders:
                     queued, pending_orders = pending_orders, []
@@ -1085,6 +1106,8 @@ class BacktestCabinet:
                                 'reason': 'STOP'
                             })
                     await self._emit_account_snapshot(kline, active_strategy_id=order['strategy_id'], compliance_status="PASS")
+                if current_dt in day_end_dt_set:
+                    self._record_daily_nav(kline)
             perf_main_loop_ms = int((perf_counter() - stage_started_at) * 1000)
             await self._emit('backtest_progress', {'progress': 100, 'current_date': 'Done'})
             stage_started_at = perf_counter()
@@ -1099,6 +1122,7 @@ class BacktestCabinet:
                 "volume": float(last_row.get("volume", last_row.get("vol", 0)) or 0)
             }
             await self._force_close_positions_at_end(final_kline)
+            self._record_daily_nav(final_kline)  # 计入期末平仓成本
             reports = []
             for s in self.strategies:
                 account = self.strategy_revenues.get(s.id)
@@ -1110,7 +1134,9 @@ class BacktestCabinet:
                     self.justice,
                     self.strategy_initial_capital,
                     start_date=start_date,
-                    end_date=end_date
+                    end_date=end_date,
+                    nav_series=self._daily_nav_series(s.id),
+                    close_series=daily_close
                 )
                 reports.append(report)
                 strategy_transactions = list(account.transactions)

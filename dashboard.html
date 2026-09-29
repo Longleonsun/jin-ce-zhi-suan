@@ -16193,6 +16193,19 @@ class GeneratedStrategyTemplate(BaseImplementedStrategy):
             renderStrategyReports();
         }
 
+        // 与同期持有对比：上涨区捕获率看上涨时吃到多少，下跌区收益看防守效果
+        function renderBenchmarkComparison(b) {
+            if (!b || b.bh_annual_return === undefined) return '';
+            const pct = (v, digits = 2) => (v === null || v === undefined || !isFinite(Number(v))) ? '--' : `${(Number(v) * 100).toFixed(digits)}%`;
+            const capture = (b.up_capture === null || b.up_capture === undefined) ? '--（持有在上涨区未盈利）' : pct(b.up_capture, 0);
+            return `
+                <div class="mt-2 pt-2 border-t border-slate-700 text-slate-400">与同期持有对比（按MA${b.ma_window}划分上涨区/下跌区）</div>
+                <div class="text-slate-300">同期持有：年化 ${pct(b.bh_annual_return)} | 最大回撤 ${pct(-Math.abs(Number(b.bh_max_dd)))}</div>
+                <div class="text-slate-300">上涨区捕获率：${capture}（策略 ${pct(b.up_strategy_return, 1)} / 持有 ${pct(b.up_bh_return, 1)}）</div>
+                <div class="text-slate-300">下跌区收益：策略 ${pct(b.down_strategy_return, 1)} / 持有 ${pct(b.down_bh_return, 1)}</div>
+            `;
+        }
+
         function renderStrategyReports() {
             const wrap = document.getElementById('bt-strategy-reports');
             if (!wrap) return;
@@ -16216,6 +16229,7 @@ class GeneratedStrategyTemplate(BaseImplementedStrategy):
                         <div class="text-slate-300">胜率：${(Number(r.win_rate) * 100).toFixed(2)}%</div>
                         <div class="text-slate-300">平均盈利：${Number(r.avg_win).toFixed(2)} | 平均亏损：${Number(r.avg_loss).toFixed(2)}</div>
                         <div class="text-slate-300">盈亏比：${Number(r.profit_ratio).toFixed(2)}</div>
+                        ${renderBenchmarkComparison(r.benchmark)}
                     `;
                     wrap.appendChild(card);
                 });

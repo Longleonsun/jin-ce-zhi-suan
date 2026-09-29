@@ -3,6 +3,10 @@ import pandas as pd
 import numpy as np
 
 
+# days 为日历天数，年化折算按每年 365.25 个日历日
+DAYS_PER_YEAR = 365.25
+
+
 class LiBuRites:
     """
     礼部 (Rites): 生成每套策略独立业绩报表、排行榜
@@ -152,6 +156,45 @@ class LiBuRites:
             "sideway_state_win_ratio": side_wr,
             "down_state_win_ratio": bear_wr,
             "regime_layer_score": layer_score
+        }
+
+    def compute_benchmark_comparison(self, nav_series, close_series, ma_window=50):
+        """与同期持有对比：持有的年化/最大回撤，以及按 MA 划分的上涨区/下跌区收益。
+
+        前一日收盘价在 MA 上方，当日计入上涨区，否则计入下跌区（只用已知信息）；MA 未形成的日子不计入。
+        区间收益为日收益之和；上涨区捕获率 = 策略上涨区收益 / 持有上涨区收益（持有该区收益不为正时不计算）。
+        持有下跌区收益可能为正（跌破均线后的反弹），故下跌区只给两个数字、不给比值。
+        """
+        nav = pd.Series(nav_series, dtype=float).dropna()
+        close = pd.Series(close_series, dtype=float).dropna()
+        idx = nav.index.intersection(close.index)
+        if len(idx) < 2:
+            return {}
+        bh = close.loc[idx]
+        bh_total = float(bh.iloc[-1] / bh.iloc[0] - 1)
+        days = max((pd.Timestamp(idx[-1]) - pd.Timestamp(idx[0])).days, 1)
+        bh_annual = -1.0 if bh_total <= -1 else float((1 + bh_total) ** (DAYS_PER_YEAR / days) - 1)
+        bh_max_dd = abs(float((bh / bh.cummax() - 1).min()))
+        ma = close.rolling(ma_window).mean()
+        known = ma.shift(1).notna().reindex(idx, fill_value=False)
+        above = (close > ma).shift(1, fill_value=False).reindex(idx, fill_value=False)
+        s_ret = nav.loc[idx].pct_change()
+        b_ret = bh.pct_change()
+        valid = known & s_ret.notna() & b_ret.notna()
+        up, down = valid & above, valid & ~above
+        up_s, up_b = float(s_ret[up].sum()), float(b_ret[up].sum())
+        return {
+            "ma_window": int(ma_window),
+            "bh_total_return": bh_total,
+            "bh_annual_return": bh_annual,
+            "bh_max_dd": bh_max_dd,
+            "up_days": int(up.sum()),
+            "down_days": int(down.sum()),
+            "up_strategy_return": up_s,
+            "up_bh_return": up_b,
+            "up_capture": (up_s / up_b) if up_b > 0 else None,
+            "down_strategy_return": float(s_ret[down].sum()),
+            "down_bh_return": float(b_ret[down].sum()),
         }
 
     def _score_piecewise(self, value, thresholds):
@@ -318,7 +361,10 @@ class LiBuRites:
             }
         }
 
-    def generate_report(self, strategy_id, hu_bu, xing_bu, initial_capital, start_date=None, end_date=None):
+    def generate_report(self, strategy_id, hu_bu, xing_bu, initial_capital, start_date=None, end_date=None,
+                        nav_series=None, close_series=None):
+        """nav_series：逐日按收盘价估值的净值（含持仓浮动盈亏），提供时回撤/夏普等按它计算；
+        close_series：标的逐日收盘价，提供时附带与同期持有的对比（report["benchmark"]）。"""
         transactions = [t for t in hu_bu.transactions if t["strategy_id"] == strategy_id]
         closed = self._closed_trades(transactions)
         total_trades = len(closed)
@@ -330,7 +376,10 @@ class LiBuRites:
         roi = total_pnl / init_cap if init_cap else 0.0
         final_capital = init_cap + total_pnl
 
-        equity = self._compute_equity_curve(closed, init_cap, start_date=start_date, end_date=end_date)
+        if nav_series is not None and len(nav_series) >= 2:
+            equity = pd.Series(nav_series, dtype=float)
+        else:
+            equity = self._compute_equity_curve(closed, init_cap, start_date=start_date, end_date=end_date)
         max_value = equity.cummax()
         drawdown = (equity - max_value) / max_value.replace(0, np.nan)
         max_dd_pct = abs(self._safe_float(drawdown.min(), 0.0))
@@ -355,7 +404,7 @@ class LiBuRites:
         if roi <= -1:
             annualized_roi = -1.0
         else:
-            annualized_roi = (1 + roi) ** (252 / max(days, 1)) - 1
+            annualized_roi = (1 + roi) ** (DAYS_PER_YEAR / max(days, 1)) - 1
         if isinstance(annualized_roi, complex):
             annualized_roi = -1.0
 
@@ -363,7 +412,7 @@ class LiBuRites:
         calmar = (annualized_roi / max_dd_pct) if max_dd_pct > 0 else 0.0
         max_win_streak, max_loss_streak = self._compute_streaks(closed)
         monthly_profit_ratio = self._compute_monthly_profit_ratio(closed)
-        annualized_trades = total_trades * 252 / max(days, 1)
+        annualized_trades = total_trades * DAYS_PER_YEAR / max(days, 1)
         avg_trade_amount = np.mean([abs(self._safe_float(t.get("amount", 0.0))) for t in transactions if self._safe_float(t.get("amount", 0.0)) > 0]) if transactions else 0.0
         avg_trade_amount_ratio = (avg_trade_amount / init_cap) if init_cap > 0 else 0.0
         nav_df = hu_bu.get_nav_history()
@@ -440,6 +489,7 @@ class LiBuRites:
             "down_state_win_ratio": float(regime_layer.get("down_state_win_ratio", 0.0)),
             "regime_layer_score": float(regime_layer.get("regime_layer_score", 0.0)),
             "positive_day_ratio": float(positive_day_ratio),
+            "benchmark": self.compute_benchmark_comparison(equity, close_series) if nav_series is not None and close_series is not None else {},
             "scorecard": scorecard,
             "score_total": float(scorecard.get("total_score", 0.0)),
             "rating": str(scorecard.get("grade", "C"))
@@ -491,7 +541,7 @@ class LiBuRites:
             start_txt = "--"
             end_txt = "--"
 
-        annual_return = (1 + total_return) ** (252 / days) - 1 if days > 0 else 0.0
+        annual_return = (1 + total_return) ** (DAYS_PER_YEAR / days) - 1 if days > 0 else 0.0
 
         equity = [init_cap]
         for t in closed_trades:
@@ -506,7 +556,7 @@ class LiBuRites:
         profit_ratio = (avg_win / avg_loss) if avg_loss != 0 else 0.0
         max_win_streak, max_loss_streak = self._compute_streaks(closed_trades)
         monthly_profit_ratio = self._compute_monthly_profit_ratio(closed_trades)
-        annualized_trades = trade_count * 252 / max(days, 1)
+        annualized_trades = trade_count * DAYS_PER_YEAR / max(days, 1)
         avg_trade_amount = float(np.mean([abs(self._safe_float(t.get("amount", 0.0))) for t in transactions if self._safe_float(t.get("amount", 0.0)) > 0])) if transactions else 0.0
         avg_trade_amount_ratio = (avg_trade_amount / init_cap) if init_cap > 0 else 0.0
         equity_curve = self._compute_equity_curve(closed_trades, init_cap, start_date=start_date, end_date=end_date)
@@ -544,6 +594,10 @@ class LiBuRites:
             "regime_layer_score": self._safe_float(summary_metrics.get("regime_layer_score"), regime_layer.get("regime_layer_score", 0.0)) if isinstance(summary_metrics, dict) else regime_layer.get("regime_layer_score", 0.0)
         }
         scorecard = self._build_scorecard(metrics)
+        if isinstance(summary_metrics, dict):
+            # 年化与最大回撤以汇总指标（逐日净值口径）为准，避免与排名表不一致
+            annual_return = metrics["annualized_roi"]
+            max_drawdown = -abs(metrics["max_dd"])
 
         print("\n" + "=" * 55)
         print("               策略回测报告")
@@ -609,6 +663,7 @@ class LiBuRites:
             "down_state_win_ratio": float(self._safe_float(metrics.get("down_state_win_ratio", 0.0))),
             "regime_layer_score": float(self._safe_float(metrics.get("regime_layer_score", 0.0))),
             "scorecard": scorecard,
+            "benchmark": dict(summary_metrics.get("benchmark") or {}) if isinstance(summary_metrics, dict) else {},
             "trade_details": trade_details,
             "force_close_count": int(force_close_count),
             "report_notes": report_notes
