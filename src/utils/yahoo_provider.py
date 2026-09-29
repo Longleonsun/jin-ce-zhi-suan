@@ -153,6 +153,27 @@ class YahooProvider:
     def fetch_daily_data(self, code, start_time, end_time):
         return self._fetch_data(code, start_time, end_time, "1d")
 
+    def _load_cache(self, cache_path):
+        if not (self._cache_enabled and os.path.exists(cache_path)):
+            return pd.DataFrame()
+        try:
+            cached_df = pd.read_csv(cache_path)
+            cached_df["dt"] = pd.to_datetime(cached_df["dt"])
+            return cached_df.dropna(subset=["close", "open", "high", "low"])
+        except Exception:
+            return pd.DataFrame()
+
+    @staticmethod
+    def _cache_covers(cached_df, start_time, end_time):
+        return not cached_df.empty and cached_df["dt"].min() <= start_time and cached_df["dt"].max() >= end_time
+
+    def covers_range(self, code, start_time, end_time, interval="D"):
+        """本地缓存是否已完整覆盖区间；覆盖时 fetch_kline_data 直接读缓存、不联网。仅日线落盘。"""
+        yf_interval = self._to_yfinance_interval(interval)
+        if yf_interval != "1d":
+            return False
+        return self._cache_covers(self._load_cache(self._cache_file_path(code, yf_interval)), start_time, end_time)
+
     def fetch_kline_data(self, code, start_time, end_time, interval="D"):
         yf_interval = self._to_yfinance_interval(interval)
         return self._fetch_data(code, start_time, end_time, yf_interval)
@@ -174,17 +195,9 @@ class YahooProvider:
             if start_time < earliest:
                 start_time = earliest
 
-        cached_df = pd.DataFrame()
-        if self._cache_enabled and os.path.exists(cache_path):
-            try:
-                cached_df = pd.read_csv(cache_path)
-                cached_df["dt"] = pd.to_datetime(cached_df["dt"])
-                cached_df = cached_df.dropna(subset=["close", "open", "high", "low"])
-                if not cached_df.empty:
-                    if cached_df["dt"].min() <= start_time and cached_df["dt"].max() >= end_time:
-                        return cached_df[(cached_df["dt"] >= start_time) & (cached_df["dt"] <= end_time)].copy()
-            except Exception:
-                cached_df = pd.DataFrame()
+        cached_df = self._load_cache(cache_path)
+        if self._cache_covers(cached_df, start_time, end_time):
+            return cached_df[(cached_df["dt"] >= start_time) & (cached_df["dt"] <= end_time)].copy()
 
         if not cached_df.empty and cached_df["dt"].min() > start_time + timedelta(days=_BACKFILL_TOLERANCE_DAYS):
             # 缓存起点晚于请求起点（例如先跑了短周期实盘预热），增量拉取只会向后补，需整段重拉

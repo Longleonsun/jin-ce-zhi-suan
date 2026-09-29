@@ -309,6 +309,18 @@ class BacktestCabinet:
             'msg': f'缓存落库完成：{cache_db_source} interval={interval} 写入 {int(written or 0)} 条'
         })
 
+    def _local_data_covers(self, provider, start_date, end_date, interval, provider_source):
+        """内存缓存或数据源本地缓存已完整覆盖回测区间（取数不需要联网）。"""
+        if self._cache_key(start_date, end_date, interval, provider_source) in BacktestCabinet._tf_cache:
+            return True
+        covers = getattr(provider, "covers_range", None)
+        if not callable(covers):
+            return False
+        try:
+            return bool(covers(self.stock_code, start_date, end_date, interval))
+        except Exception:
+            return False
+
     def _check_provider_connectivity(self, provider, provider_source):
         try:
             if hasattr(provider, "check_connectivity"):
@@ -689,8 +701,21 @@ class BacktestCabinet:
                 'phase_label': '检查数据源连通性',
                 'current_date': f'{start_date.date()} ~ {end_date.date()}'
             })
-            await self._emit('backtest_flow', {'module': '工部', 'level': 'system', 'msg': f'数据获取阶段：连通性检查 {provider_source}'})
-            ok, reason = await asyncio.to_thread(self._check_provider_connectivity, provider, provider_source)
+            strategy_trigger_tf = {s.id: self._normalize_trigger_tf(getattr(s, "trigger_timeframe", "1min")) for s in self.strategies}
+            _all_tfs = set(strategy_trigger_tf.values()) if strategy_trigger_tf else {"1min"}
+            if all(tf == "D" for tf in _all_tfs):
+                base_interval = "D"
+            elif len(_all_tfs) == 1:
+                base_interval = next(iter(_all_tfs))  # all strategies share one non-daily tf → use it directly
+            else:
+                base_interval = "1min"
+            if await asyncio.to_thread(self._local_data_covers, provider, start_date, end_date, base_interval, provider_source):
+                # 本地已有完整数据时取数不联网，跳过连通性检查，断网也能回测
+                ok, reason = True, "local_cache"
+                await self._emit('backtest_flow', {'module': '工部', 'level': 'success', 'msg': f'本地缓存已覆盖回测区间，跳过连通性检查: {provider_source} interval={base_interval}'})
+            else:
+                await self._emit('backtest_flow', {'module': '工部', 'level': 'system', 'msg': f'数据获取阶段：连通性检查 {provider_source}'})
+                ok, reason = await asyncio.to_thread(self._check_provider_connectivity, provider, provider_source)
             if not ok and enable_fallback:
                 await self._emit('backtest_flow', {'module': '工部', 'level': 'warning', 'msg': f'主数据源连通性检查失败，开始回退。原因: {reason}'})
                 fallback_sources = []
@@ -720,15 +745,8 @@ class BacktestCabinet:
                     'provider_source': provider_source
                 })
                 return
-            await self._emit('backtest_flow', {'module': '工部', 'level': 'success', 'msg': f'数据源连通性检查通过: {provider_source}'})
-            strategy_trigger_tf = {s.id: self._normalize_trigger_tf(getattr(s, "trigger_timeframe", "1min")) for s in self.strategies}
-            _all_tfs = set(strategy_trigger_tf.values()) if strategy_trigger_tf else {"1min"}
-            if all(tf == "D" for tf in _all_tfs):
-                base_interval = "D"
-            elif len(_all_tfs) == 1:
-                base_interval = next(iter(_all_tfs))  # all strategies share one non-daily tf → use it directly
-            else:
-                base_interval = "1min"
+            if reason != "local_cache":
+                await self._emit('backtest_flow', {'module': '工部', 'level': 'success', 'msg': f'数据源连通性检查通过: {provider_source}'})
             df = self._cache_get(start_date, end_date, base_interval, provider_source)
             if df.empty:
                 await self._emit('backtest_progress', {
