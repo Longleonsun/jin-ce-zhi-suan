@@ -902,3 +902,91 @@ class Strategy12(Strategy11):
     def __init__(self):
         BaseImplementedStrategy.__init__(self, "12", "MACD-KDJ-成交量共振30分钟", trigger_timeframe="30min")
         self._init_state()
+
+
+class Strategy13(BaseImplementedStrategy):
+    """唐奇安趋势择时 + 波动率目标定仓（日线，不加杠杆）。
+
+    择时：收盘价突破前 entry_period 日最高收盘价持有，跌破前 exit_period 日最低收盘价空仓。
+    定仓：持有时目标仓位 = min(max_position_pct, target_vol / 近 vol_window 日年化波动率)，
+    波动越大仓位越低；目标与当前仓位相差达到 rebalance_threshold（占总资产）才调仓。
+    """
+
+    def __init__(self):
+        super().__init__("13", "唐奇安趋势+波动率定仓", trigger_timeframe="D")
+        self.closes = {}        # Code -> [(dt, close)]
+        self.hold_prev = {}     # Code -> 截至上一根K线的择时状态
+        self.hold_state = {}    # Code -> 当前K线的择时状态
+
+    def _append_close(self, code, dt, close, keep):
+        rows = self.closes.setdefault(code, [])
+        # 同一根K线重复推送（实盘预热/盘中刷新）时覆盖而非追加，择时状态从上一根K线重新推导
+        if rows and rows[-1][0] == dt:
+            rows[-1] = (dt, close)
+        else:
+            self.hold_prev[code] = self.hold_state.get(code, False)
+            rows.append((dt, close))
+        if len(rows) > keep:
+            del rows[:len(rows) - keep]
+        return [c for _, c in rows]
+
+    def _max_position(self):
+        pct = float(self._cfg("max_position_pct", 1.0))
+        if pct > 1:
+            pct = pct / 100.0
+        return max(0.0, min(1.0, pct))
+
+    def _target_fraction(self, closes, vol_window):
+        target_vol = float(self._cfg("target_vol", 0.40))
+        max_pos = self._max_position()
+        rets = np.diff(np.asarray(closes[-(vol_window + 1):], dtype=float))
+        rets = rets / np.asarray(closes[-(vol_window + 1):-1], dtype=float)
+        rv = float(np.std(rets)) * np.sqrt(252) if len(rets) >= 2 else 0.0
+        if target_vol <= 0 or rv <= 0:
+            return max_pos
+        return min(max_pos, target_vol / rv)
+
+    def on_bar(self, kline):
+        code = kline["code"]
+        close = float(kline.get("close", 0.0) or 0.0)
+        entry_n = int(self._cfg("entry_period", 25))
+        exit_n = int(self._cfg("exit_period", 12))
+        vol_window = int(self._cfg("vol_window", 20))
+        closes = self._append_close(code, pd.to_datetime(kline["dt"]), close,
+                                    max(entry_n, exit_n, vol_window) + 1)
+        if close <= 0 or len(closes) <= max(entry_n, exit_n, vol_window):
+            return None
+
+        hold = self.hold_prev.get(code, False)
+        if not hold and close > max(closes[-entry_n - 1:-1]):
+            hold = True
+        elif hold and close < min(closes[-exit_n - 1:-1]):
+            hold = False
+        self.hold_state[code] = hold
+
+        qty = int(self.positions.get(code, 0) or 0)
+        if not hold:
+            return self.create_exit_signal(kline, qty, "Donchian Exit") if qty > 0 else None
+
+        lot = self._lot_size(code)
+        total = float(getattr(self, "total_value", 0.0) or 0.0) or float(getattr(self, "current_cash", 0.0) or 0.0)
+        target_qty = int(total * self._target_fraction(closes, vol_window) // close // lot * lot)
+        diff = target_qty - qty
+        if diff == 0:
+            return None
+        # 已持仓时只在偏离足够大时调仓，避免波动率小幅变化引起频繁买卖
+        threshold = float(self._cfg("rebalance_threshold", 0.1))
+        if qty > 0 and total > 0 and abs(diff) * close / total < threshold:
+            return None
+        if diff < 0:
+            return self.create_exit_signal(kline, -diff, "Vol Target Reduce")
+        return {
+            "strategy_id": self.id,
+            "code": code,
+            "dt": kline["dt"],
+            "direction": "BUY",
+            "price": kline["close"],
+            "qty": diff,
+            "stop_loss": None,
+            "take_profit": None
+        }

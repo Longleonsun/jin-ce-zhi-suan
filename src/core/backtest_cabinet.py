@@ -27,6 +27,9 @@ from src.utils.tdx_provider import TdxProvider
 from src.utils.config_loader import ConfigLoader
 from src.utils.indicators import Indicators
 
+# 基准策略（00 长期持有）不参与总回撤强平：被止损的"持有"不再是持有，无法作为择时策略的对照
+DRAWDOWN_EXEMPT_STRATEGY_IDS = {"00"}
+
 class BacktestCabinet:
     _tf_cache = {}
     _tf_cache_limit = 24
@@ -393,19 +396,23 @@ class BacktestCabinet:
                         task.cancel()
                     return pd.DataFrame(), f'拉取超时（{timeout_sec}s）'
 
-    def _compute_portfolio_snapshot(self, current_prices):
+    def _compute_portfolio_snapshot(self, current_prices, exclude_exempt=False):
         holdings_value = 0.0
         cash_total = 0.0
         for sid, account in self.strategy_revenues.items():
+            if exclude_exempt and sid in DRAWDOWN_EXEMPT_STRATEGY_IDS:
+                continue
             holdings_value += self.state_affairs.update_strategy_holdings_value(sid, current_prices)
             cash_total += float(account.cash)
         fund_value = cash_total + holdings_value
         return fund_value, cash_total, holdings_value
 
     def _compute_current_drawdown_ratio(self, fund_value):
-        peak = float(self.initial_capital)
+        """总回撤：只统计参与强平的策略（不含 DRAWDOWN_EXEMPT_STRATEGY_IDS）。"""
+        peak = sum(float(account.initial_capital) for sid, account in self.strategy_revenues.items()
+                   if sid not in DRAWDOWN_EXEMPT_STRATEGY_IDS)
         if self.aggregate_nav:
-            peak = max(peak, max(float(x.get('nav', 0.0) or 0.0) for x in self.aggregate_nav))
+            peak = max(peak, max(float(x.get('risk_nav', 0.0) or 0.0) for x in self.aggregate_nav))
         if peak <= 0:
             return 0.0
         return max(0.0, (float(peak) - float(fund_value)) / float(peak))
@@ -495,7 +502,7 @@ class BacktestCabinet:
         max_drawdown_pct = float(self.config.get("risk_control.max_drawdown_pct", 0.0) or 0.0)
         if max_drawdown_pct <= 0:
             return False
-        portfolio_value, _, _ = self._compute_portfolio_snapshot({kline['code']: kline['close']})
+        portfolio_value, _, _ = self._compute_portfolio_snapshot({kline['code']: kline['close']}, exclude_exempt=True)
         current_drawdown = self._compute_current_drawdown_ratio(portfolio_value)
         if current_drawdown <= max_drawdown_pct:
             self.drawdown_above_limit = False
@@ -503,7 +510,9 @@ class BacktestCabinet:
         if self.drawdown_above_limit:
             return False
         has_position = False
-        for stocks in self.state_affairs.positions.values():
+        for sid, stocks in self.state_affairs.positions.items():
+            if sid in DRAWDOWN_EXEMPT_STRATEGY_IDS:
+                continue
             for pos in stocks.values():
                 if int(pos.get("qty", 0) or 0) > 0:
                     has_position = True
@@ -521,7 +530,7 @@ class BacktestCabinet:
         closed_any = False
         for sid, stocks in list(self.state_affairs.positions.items()):
             account = self.strategy_revenues.get(sid)
-            if account is None:
+            if account is None or sid in DRAWDOWN_EXEMPT_STRATEGY_IDS:
                 continue
             for code, pos in list(stocks.items()):
                 qty = int(pos.get("qty", 0) or 0)
@@ -620,7 +629,8 @@ class BacktestCabinet:
             'pnl': f"{pnl_pct:+.2f}%",
             'pos_ratio': f"{pos_ratio:.2f}%"
         })
-        self.aggregate_nav.append({'dt': kline['dt'], 'nav': fund_value})
+        risk_nav, _, _ = self._compute_portfolio_snapshot(current_prices, exclude_exempt=True)
+        self.aggregate_nav.append({'dt': kline['dt'], 'nav': fund_value, 'risk_nav': risk_nav})
         current_dd = 0.0
         if self.aggregate_nav:
             nav_series = [x.get('nav', 0.0) for x in self.aggregate_nav]
@@ -1007,7 +1017,7 @@ class BacktestCabinet:
                         continue
                     current_fund_value = float(account.cash) + self.state_affairs.update_strategy_holdings_value(sid, {kline['code']: kline['close']})
                     current_positions = self.state_affairs.positions.get(sid, {})
-                    portfolio_value, _, _ = self._compute_portfolio_snapshot({kline['code']: kline['close']})
+                    portfolio_value, _, _ = self._compute_portfolio_snapshot({kline['code']: kline['close']}, exclude_exempt=True)
                     current_drawdown = self._compute_current_drawdown_ratio(portfolio_value)
                     approved, reason = self.chancellery.check_signal(signal, current_fund_value, current_positions, 0.0, current_drawdown=current_drawdown)
                     await self._emit('menxia', {

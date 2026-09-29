@@ -670,6 +670,9 @@
                     <option value="07">07 跳空交易系统</option>
                     <option value="08">08 神奇九转</option>
                     <option value="09">09 箱体降本策略</option>
+                    <option value="11">11 MACD-KDJ-成交量共振</option>
+                    <option value="12">12 MACD-KDJ-成交量共振30分钟</option>
+                    <option value="13">13 唐奇安趋势+波动率定仓</option>
                 </select>
             </div>
             <div id="strategy-doc-content" class="space-y-3"></div>
@@ -3400,8 +3403,8 @@ class GeneratedStrategyTemplate(BaseImplementedStrategy):
                     '硅基后不再重复加仓。'
                 ],
                 exit_rules: ['到达回测最后一根K线时一次性全部流码。'],
-                params: ['下单数量：默认1000股'],
-                note: '该策略仅用于回测基准对照，模拟硅基并持有到回测结束。',
+                params: ['下单数量：全部可用资金，按市场下单单位取整'],
+                note: '该策略仅用于回测基准对照，模拟硅基并持有到回测结束。与择时类策略（如13）同时勾选回测，可在同一区间直接对比两者收益与回撤。',
                 example: '示例：第一根K线硅基后全程持有，最后一根K线自动平仓。'
             },
             '01': {
@@ -3548,6 +3551,22 @@ class GeneratedStrategyTemplate(BaseImplementedStrategy):
                 params: ['成交量倍数: 1.5', '止损: 3.5%', '止盈: 8%', '追踪止损: 5%', '最大持有: 80根30分钟K线', '单标的仓位上限: 总资产20%'],
                 note: '策略12使用30分钟数据，适合Yahoo可获取的美股/ETF与支持30分钟K线的数据源。',
                 example: '示例：AAPL.US 30分钟K线站上MA20，同时MACD/KDJ走强且放量时硅基。'
+            },
+            '13': {
+                name: '13 唐奇安趋势+波动率定仓',
+                trigger: '日线',
+                entry_rules: [
+                    '择时：收盘价突破前25日最高收盘价时转为持有状态。',
+                    '定仓：目标仓位 = 目标波动率40% ÷ 近20日年化波动率，上限为总资产的100%（不加杠杆），波动越大仓位越低。',
+                    '持有期间目标仓位与当前仓位相差超过总资产10%时调仓，按市场下单单位取整。'
+                ],
+                exit_rules: [
+                    '收盘价跌破前12日最低收盘价时全部流码。',
+                    '波动率上升导致目标仓位下降超过总资产10%时减仓。'
+                ],
+                params: ['突破周期: 25日', '离场周期: 12日', '目标波动率: 40%', '波动率窗口: 20日', '仓位上限: 100%', '调仓阈值: 10%'],
+                note: '策略13适合宽基/行业ETF等趋势型标的，主要作用是在下跌趋势中空仓以降低回撤。突破/离场周期对结果较敏感（历史测试中25/12表现最好，相邻参数明显偏弱），建议与00长期持有同时回测对比。',
+                example: '示例：沪深300ETF收盘价创25日新高后硅基，波动率约20%时满仓；跌破12日最低收盘价后全部流码。'
             }
         };
         const STRATEGY_FALLBACK = [
@@ -3562,7 +3581,8 @@ class GeneratedStrategyTemplate(BaseImplementedStrategy):
             { id: '08', name: '神奇九转' },
             { id: '09', name: '箱体降本策略' },
             { id: '11', name: 'MACD-KDJ-成交量共振' },
-            { id: '12', name: 'MACD-KDJ-成交量共振30分钟' }
+            { id: '12', name: 'MACD-KDJ-成交量共振30分钟' },
+            { id: '13', name: '唐奇安趋势+波动率定仓' }
         ];
         const CLASSIC_PATTERNS = [
             { id: 'p1', patternName: '单边大牛市（主升浪）', stockName: '上纬新材', stockCode: '688585', start: '2025-07-09', end: '2025-12-31' },
