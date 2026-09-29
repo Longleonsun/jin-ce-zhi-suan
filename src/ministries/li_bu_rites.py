@@ -6,6 +6,14 @@ import numpy as np
 # days 为日历天数，年化折算按每年 365.25 个日历日
 DAYS_PER_YEAR = 365.25
 
+# 系统（而非策略信号）发起的成交原因
+SYSTEM_TRADE_REASON_LABELS = {
+    "FORCE_CLOSE_END": "回测结束平仓",
+    "DRAWDOWN_LIMIT": "总回撤强平",
+    "STOP_LOSS": "止损",
+    "TAKE_PROFIT": "止盈",
+}
+
 
 class LiBuRites:
     """
@@ -617,11 +625,11 @@ class LiBuRites:
         print(f"评分卡总分：{scorecard['total_score']:.1f}/100 评级：{scorecard['grade']}（{scorecard['conclusion']}）")
         print("=" * 55 + "\n")
         trade_details = []
-        force_close_count = 0
+        system_counts = {}
         for t in transactions:
             reason = str(t.get("reason", "") or "")
-            if reason == "FORCE_CLOSE_END":
-                force_close_count += 1
+            if reason in SYSTEM_TRADE_REASON_LABELS:
+                system_counts[reason] = system_counts.get(reason, 0) + 1
             trade_details.append({
                 "dt": str(t.get("dt", "")),
                 "direction": str(t.get("direction", "")),
@@ -630,12 +638,14 @@ class LiBuRites:
                 "amount": float(t.get("amount", 0.0) or 0.0),
                 "cost": float(t.get("cost", 0.0) or 0.0),
                 "pnl": float(t.get("pnl", 0.0) or 0.0),
-                "reason": reason
+                "reason": reason,
+                "reason_label": SYSTEM_TRADE_REASON_LABELS.get(reason, "策略信号")
             })
 
-        report_notes = []
-        if force_close_count > 0:
-            report_notes.append(f"触发回测结束强制平仓 {force_close_count} 次（FORCE_CLOSE_END）")
+        force_close_count = system_counts.get("FORCE_CLOSE_END", 0)
+        report_notes = [f"{SYSTEM_TRADE_REASON_LABELS[k]} {n} 次（{k}），非策略信号" for k, n in system_counts.items()]
+        if force_close_count > 0 and trade_details and trade_details[-1]["reason"] == "FORCE_CLOSE_END":
+            report_notes.append(f"最后一笔（{trade_details[-1]['dt'][:10]}）为回测结束时的强制平仓，不代表策略当日发出卖出信号")
 
         return {
             "strategy_id": strategy_id,

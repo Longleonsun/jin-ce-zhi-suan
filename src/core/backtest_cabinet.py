@@ -476,7 +476,8 @@ class BacktestCabinet:
             'code': signal['code'],
             'dir': signal['direction'],
             'price': fill_price,
-            'qty': fill_qty
+            'qty': fill_qty,
+            'reason': str(signal.get('reason', '') or '')
         })
         await self._emit_account_snapshot(kline, active_strategy_id=sid, compliance_status="PASS")
         return True
@@ -1103,7 +1104,7 @@ class BacktestCabinet:
                                 'dir': order['direction'],
                                 'price': order['price'],
                                 'qty': order['qty'],
-                                'reason': 'STOP'
+                                'reason': order.get('reason', 'STOP')
                             })
                     await self._emit_account_snapshot(kline, active_strategy_id=order['strategy_id'], compliance_status="PASS")
                 if current_dt in day_end_dt_set:

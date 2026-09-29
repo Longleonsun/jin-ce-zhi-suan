@@ -50,7 +50,7 @@ class HuBuRevenue:
         total_cost = commission + stamp_duty + transfer_fee
         return total_cost, commission, stamp_duty, transfer_fee
 
-    def record_transaction(self, strategy_id, dt, direction, price, quantity, cost, pnl=0.0, commission=0.0, stamp_duty=0.0, transfer_fee=0.0):
+    def record_transaction(self, strategy_id, dt, direction, price, quantity, cost, pnl=0.0, commission=0.0, stamp_duty=0.0, transfer_fee=0.0, reason=""):
         """
         Record a transaction.
         """
@@ -67,7 +67,8 @@ class HuBuRevenue:
             'pnl': pnl,
             'commission': float(commission or 0.0),
             'stamp_duty': float(stamp_duty or 0.0),
-            'transfer_fee': float(transfer_fee or 0.0)
+            'transfer_fee': float(transfer_fee or 0.0),
+            'reason': str(reason or '')  # 系统操作为 FORCE_CLOSE_END/DRAWDOWN_LIMIT/STOP_LOSS/TAKE_PROFIT，策略信号为策略自带说明
         })
         
         if direction == 'BUY':

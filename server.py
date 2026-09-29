@@ -43,6 +43,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict, List, Any
 from src.core.live_cabinet import LiveCabinet
 from src.core.backtest_cabinet import BacktestCabinet
+from src.ministries.li_bu_rites import SYSTEM_TRADE_REASON_LABELS
 from src.utils.config_loader import ConfigLoader
 import src.strategies.strategy_factory as strategy_factory_module
 from src.strategies.strategy_manager_repo import (
@@ -9219,13 +9220,15 @@ def _build_backtest_kline_payload(stock_code, start_dt, end_dt):
             price_text = f"{float(trade_price):.2f}"
         except Exception:
             price_text = ""
+        # 系统发起的成交（回测结束平仓、回撤强平、止损止盈）在价格后注明，与策略信号区分
+        system_label = SYSTEM_TRADE_REASON_LABELS.get(str(t.get("reason", "") or ""), "")
         markers.append({
             "time": d,
             "strategy_id": sid,
             "position": "belowBar" if is_buy else "aboveBar",
             "shape": "arrowUp" if is_buy else "arrowDown",
             "color": color_map.get(sid, "#60a5fa"),
-            "text": price_text
+            "text": f"{price_text} {system_label}".strip()
         })
     strategy_legends = [{"id": sid, "name": strategy_name_map.get(sid, f"策略{sid}"), "color": color_map[sid]} for sid in strategy_ids]
     return {
@@ -11329,7 +11332,8 @@ async def emit_event_to_ws(event_type, data, stock_code=None, report_id=None, br
                 "code": str(emit_data.get("code", "")),
                 "dir": str(emit_data.get("dir", "")),
                 "price": float(emit_data.get("price", 0.0) or 0.0),
-                "qty": int(emit_data.get("qty", 0) or 0)
+                "qty": int(emit_data.get("qty", 0) or 0),
+                "reason": str(emit_data.get("reason", "") or "")
             })
             _invalidate_backtest_kline_payload_cache(stock_code=emit_data.get("code", ""))
     elif event_type == "backtest_flow":

@@ -15455,7 +15455,7 @@ class GeneratedStrategyTemplate(BaseImplementedStrategy):
                 position: direction === 'BUY' ? 'belowBar' : 'aboveBar',
                 shape: direction === 'BUY' ? 'arrowUp' : 'arrowDown',
                 color: String(matchedStrategy?.color || '#60a5fa'),
-                text: Number(data?.price || 0).toFixed(2)
+                text: `${Number(data?.price || 0).toFixed(2)} ${SYSTEM_TRADE_REASON_LABELS[String(data?.reason || '')] || ''}`.trim()
             };
             const dup = klineRealtimeMarkers.some(m =>
                 String(m?.time || '') === marker.time &&
@@ -16193,6 +16193,14 @@ class GeneratedStrategyTemplate(BaseImplementedStrategy):
             renderStrategyReports();
         }
 
+        // 系统（而非策略信号）发起的成交，与后端 SYSTEM_TRADE_REASON_LABELS 保持一致
+        const SYSTEM_TRADE_REASON_LABELS = { FORCE_CLOSE_END: '回测结束平仓', DRAWDOWN_LIMIT: '总回撤强平', STOP_LOSS: '止损', TAKE_PROFIT: '止盈' };
+
+        function renderReportNotes(notes) {
+            if (!Array.isArray(notes) || !notes.length) return '';
+            return notes.map(n => `<div class="text-amber-300">提示：${String(n)}</div>`).join('');
+        }
+
         // 与同期持有对比：上涨区捕获率看上涨时吃到多少，下跌区收益看防守效果
         function renderBenchmarkComparison(b) {
             if (!b || b.bh_annual_return === undefined) return '';
@@ -16229,6 +16237,7 @@ class GeneratedStrategyTemplate(BaseImplementedStrategy):
                         <div class="text-slate-300">胜率：${(Number(r.win_rate) * 100).toFixed(2)}%</div>
                         <div class="text-slate-300">平均盈利：${Number(r.avg_win).toFixed(2)} | 平均亏损：${Number(r.avg_loss).toFixed(2)}</div>
                         <div class="text-slate-300">盈亏比：${Number(r.profit_ratio).toFixed(2)}</div>
+                        ${renderReportNotes(r.report_notes)}
                         ${renderBenchmarkComparison(r.benchmark)}
                     `;
                     wrap.appendChild(card);

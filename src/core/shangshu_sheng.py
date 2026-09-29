@@ -197,7 +197,8 @@ class ShangshuSheng:
                 0.0,
                 commission=comm,
                 stamp_duty=stamp,
-                transfer_fee=transfer
+                transfer_fee=transfer,
+                reason=signal.get('reason', '')
             )
 
         elif direction == 'SELL':
@@ -240,7 +241,8 @@ class ShangshuSheng:
                 pnl,
                 commission=comm,
                 stamp_duty=stamp,
-                transfer_fee=transfer
+                transfer_fee=transfer,
+                reason=signal.get('reason', '')
             )
             
         return True
@@ -294,6 +296,7 @@ class ShangshuSheng:
                         'qty': sellable_qty,
                         'price': price, # Trigger price
                         'fill_price': price,
+                        'reason': type_,  # STOP_LOSS / TAKE_PROFIT
                         'type': 'MARKET' # Execute immediately
                     }
                     triggered_orders.append(order)
