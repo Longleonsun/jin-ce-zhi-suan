@@ -990,3 +990,57 @@ class Strategy13(BaseImplementedStrategy):
             "stop_loss": None,
             "take_profit": None
         }
+
+
+class Strategy15(BaseImplementedStrategy):
+    """MACD(3,6,5) 金叉买入、死叉卖出（日线）。
+
+    空仓时 DIF 上穿 DEA 买入，持仓时 DIF 下穿 DEA 全部卖出；参数可在 strategy_params."15" 中修改。
+    """
+
+    def __init__(self):
+        super().__init__("15", "MACD(3,6,5)金叉死叉", trigger_timeframe="D")
+        self.closes = {}  # Code -> [(dt, close)]
+
+    def _append_close(self, code, dt, close, keep):
+        rows = self.closes.setdefault(code, [])
+        # 同一根K线重复推送（实盘预热/盘中刷新）时覆盖而非追加
+        if rows and rows[-1][0] == dt:
+            rows[-1] = (dt, close)
+        else:
+            rows.append((dt, close))
+        if len(rows) > keep:
+            del rows[:len(rows) - keep]
+        return pd.Series([c for _, c in rows], dtype=float)
+
+    def on_bar(self, kline):
+        code = kline["code"]
+        fast = int(self._cfg("fast_period", 3))
+        slow = int(self._cfg("slow_period", 6))
+        signal = int(self._cfg("signal_period", 5))
+        warmup = 3 * (slow + signal)  # EMA 起始段不稳定，预热后再出信号
+        closes = self._append_close(code, pd.to_datetime(kline["dt"]), float(kline.get("close", 0.0) or 0.0),
+                                    max(250, warmup + 2))
+        if len(closes) < warmup + 2:
+            return None
+        dif = closes.ewm(span=fast, adjust=False).mean() - closes.ewm(span=slow, adjust=False).mean()
+        diff = (dif - dif.ewm(span=signal, adjust=False).mean()).to_numpy()
+        prev, curr = diff[-2], diff[-1]
+        qty = int(self.positions.get(code, 0) or 0)
+        if qty > 0 and prev >= 0 > curr:
+            return self.create_exit_signal(kline, qty, "MACD Dead Cross")
+        if qty <= 0 and prev <= 0 < curr:
+            buy_qty = int(self._qty(code))
+            if buy_qty <= 0:
+                return None
+            return {
+                "strategy_id": self.id,
+                "code": code,
+                "dt": kline["dt"],
+                "direction": "BUY",
+                "price": kline["close"],
+                "qty": buy_qty,
+                "stop_loss": None,
+                "take_profit": None
+            }
+        return None

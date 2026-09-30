@@ -1,7 +1,7 @@
 # src/strategies/strategy_factory.py
 from src.strategies.implemented_strategies import (
     Strategy00, Strategy01, Strategy02, Strategy03, Strategy04, Strategy05,
-    Strategy06, Strategy07, Strategy08, Strategy09, Strategy10, Strategy11, Strategy12, Strategy13
+    Strategy06, Strategy07, Strategy08, Strategy09, Strategy10, Strategy11, Strategy12, Strategy13, Strategy15
 )
 from src.strategies.strategy_manager_repo import (
     load_custom_strategies,
@@ -32,6 +32,7 @@ def create_strategies(apply_active_filter=True):
         Strategy11(),
         Strategy12(),
         Strategy13(),
+        Strategy15(),
         # 内置“选股示例策略”（按可筛选性动态启用）。
         *( [Strategy10()] if include_screener_demo else [] )
     ]

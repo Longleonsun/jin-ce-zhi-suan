@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from src.strategies.implemented_strategies import (
     Strategy00, Strategy01, Strategy02, Strategy03, Strategy04, Strategy05,
-    Strategy06, Strategy07, Strategy08, Strategy09, Strategy10, Strategy11, Strategy12, Strategy13, BaseImplementedStrategy
+    Strategy06, Strategy07, Strategy08, Strategy09, Strategy10, Strategy11, Strategy12, Strategy13, Strategy15, BaseImplementedStrategy
 )
 from src.utils.indicators import Indicators
 import pandas as pd
@@ -29,6 +29,7 @@ _BUILTIN_STRATEGY_CLASSES = {
     "11": Strategy11,
     "12": Strategy12,
     "13": Strategy13,
+    "15": Strategy15,
 }
 _BUILTIN_META_CACHE = None
 _BUILTIN_SCREENER_DEMO_AVAILABLE_CACHE = None
@@ -171,7 +172,7 @@ def list_builtin_strategy_meta():
     items = [
         Strategy00(), Strategy01(), Strategy02(), Strategy03(), Strategy04(),
         Strategy05(), Strategy06(), Strategy07(), Strategy08(), Strategy09(),
-        Strategy11(), Strategy12(), Strategy13(),
+        Strategy11(), Strategy12(), Strategy13(), Strategy15(),
         # 追加内置选股示例策略（仅在可筛出股票时开启）。
         *( [Strategy10()] if include_screener_demo else [] )
     ]

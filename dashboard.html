@@ -673,6 +673,7 @@
                     <option value="11">11 MACD-KDJ-成交量共振</option>
                     <option value="12">12 MACD-KDJ-成交量共振30分钟</option>
                     <option value="13">13 唐奇安趋势+波动率定仓</option>
+                    <option value="15">15 MACD(3,6,5)金叉死叉</option>
                 </select>
             </div>
             <div id="strategy-doc-content" class="space-y-3"></div>
@@ -3567,6 +3568,18 @@ class GeneratedStrategyTemplate(BaseImplementedStrategy):
                 params: ['突破周期: 25日', '离场周期: 12日', '目标波动率: 40%', '波动率窗口: 20日', '仓位上限: 100%', '调仓阈值: 10%'],
                 note: '策略13适合宽基/行业ETF等趋势型标的，主要作用是在下跌趋势中空仓以降低回撤。突破/离场周期对结果较敏感（历史测试中25/12表现最好，相邻参数明显偏弱），建议与00长期持有同时回测对比。',
                 example: '示例：沪深300ETF收盘价创25日新高后硅基，波动率约20%时满仓；跌破12日最低收盘价后全部流码。'
+            },
+            '15': {
+                name: '15 MACD(3,6,5)金叉死叉',
+                trigger: '日线',
+                entry_rules: [
+                    '空仓时，MACD(3,6,5) 的 DIF 上穿 DEA（金叉）后硅基。',
+                    '信号在K线收盘后确认，下一根K线开盘成交。'
+                ],
+                exit_rules: ['持仓时，DIF 下穿 DEA（死叉）后全部流码。'],
+                params: ['快线: 3', '慢线: 6', '信号线: 5', '下单数量: 按通用下单配置'],
+                note: '策略15参数很短，对价格变化非常敏感，交易频繁，适合观察短期节奏；震荡行情中容易反复进出，建议结合回测报告中的"与同期持有对比"评估。',
+                example: '示例：日线 DIF 从 DEA 下方上穿后次日开盘硅基，之后 DIF 下穿 DEA 时次日开盘全部流码。'
             }
         };
         const STRATEGY_FALLBACK = [
@@ -3582,7 +3595,8 @@ class GeneratedStrategyTemplate(BaseImplementedStrategy):
             { id: '09', name: '箱体降本策略' },
             { id: '11', name: 'MACD-KDJ-成交量共振' },
             { id: '12', name: 'MACD-KDJ-成交量共振30分钟' },
-            { id: '13', name: '唐奇安趋势+波动率定仓' }
+            { id: '13', name: '唐奇安趋势+波动率定仓' },
+            { id: '15', name: 'MACD(3,6,5)金叉死叉' }
         ];
         const CLASSIC_PATTERNS = [
             { id: 'p1', patternName: '单边大牛市（主升浪）', stockName: '上纬新材', stockCode: '688585', start: '2025-07-09', end: '2025-12-31' },
