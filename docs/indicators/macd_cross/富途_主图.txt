@@ -1,0 +1,9 @@
+{MACD金叉死叉（主图）：DIF上穿DEA标B（买入），下穿标S（卖出）
+ 参数在「参数设置」中定义：FAST 快线，SLOW 慢线，SIG 信号线（与项目15号策略默认一致：3、6、5）
+ 信号在K线收盘后确认，次日开盘执行}
+DIF:=EMA(C,FAST)-EMA(C,SLOW);
+DEA:=EMA(DIF,SIG);
+BPT:=CROSS(DIF,DEA);
+SPT:=CROSS(DEA,DIF);
+DRAWTEXT(BPT,L*0.99,'B'),COLORRED;
+DRAWTEXT(SPT,H*1.01,'S'),COLORGREEN;
